@@ -4376,6 +4376,29 @@ class _CfgEventsView(ui.View):
             self.add_item(btn)
 
 
+class _CfgVzhFactionSelect(ui.Select):
+    """Явный выбор фракции для расписания ВЗХ (banda/mafia) — не тумблер, чтобы не путать текущее состояние."""
+    def __init__(self, guild_id: int):
+        current = get_vzh_faction(guild_id)
+        options = [
+            discord.SelectOption(label=VZH_FACTION_LABELS["banda"], value="banda",
+                                  description=f"Дни: {_vzh_schedule_str('banda')}", default=(current == "banda")),
+            discord.SelectOption(label=VZH_FACTION_LABELS["mafia"], value="mafia",
+                                  description=f"Дни: {_vzh_schedule_str('mafia')}", default=(current == "mafia")),
+        ]
+        super().__init__(placeholder="📅 Фракция для расписания ВЗХ…", options=options, row=3)
+
+    async def callback(self, interaction: discord.Interaction):
+        faction = self.values[0]
+        vzh_schedule_settings[interaction.guild_id] = faction
+        save_data()
+        await interaction.response.send_message(
+            f"✅ Расписание ВЗХ: {VZH_FACTION_LABELS[faction]} ({_vzh_schedule_str(faction)})", ephemeral=True
+        )
+        embed = build_cfg_category_embed(interaction.guild, "event_vzh")
+        await interaction.message.edit(embed=embed, view=_CfgEventTypeView(interaction.guild, "vzh"))
+
+
 class _CfgEventTypeView(ui.View):
     def __init__(self, guild: discord.Guild, etype: str):
         super().__init__(timeout=300)
@@ -4397,18 +4420,7 @@ class _CfgEventTypeView(ui.View):
         self.add_item(_CfgRoleRemoveSelect(guild, current, get_list, cat_key, 2, f"➖ Убрать роль из !{etype}"))
 
         if etype == "vzh":
-            faction = get_vzh_faction(gid)
-            other = "mafia" if faction == "banda" else "banda"
-            toggle = _cfg_btn(f"📅 Расписание: {VZH_FACTION_LABELS[faction]} → {VZH_FACTION_LABELS[other]}", row=3)
-            async def _toggle(inter, new_faction=other):
-                vzh_schedule_settings[inter.guild_id] = new_faction
-                save_data()
-                await inter.response.edit_message(
-                    embed=build_cfg_category_embed(inter.guild, cat_key),
-                    view=_CfgEventTypeView(inter.guild, etype),
-                )
-            toggle.callback = _toggle
-            self.add_item(toggle)
+            self.add_item(_CfgVzhFactionSelect(gid))
 
 
 class _CfgVoiceView(ui.View):
