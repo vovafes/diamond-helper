@@ -24,9 +24,6 @@ load_dotenv()
 # КОНФИГ — вставь свои URL и тексты
 # ─────────────────────────────────────────────
 
-# Гифка при одобрении заявки (в ЛС)
-APPROVE_GIF_URL = "https://media0.giphy.com/media/v1.Y2lkPTc5MGI3NjExZ3VyczN2em04d3JxNTB1eWlvaWJnczl4dTdpeTZjY2g2MTFwN3NveiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/3ndAvMC5LFPNMCzq7m/giphy.gif"
-
 # Фото в АФК-панели (embed)
 AFK_IMAGE_URL = "https://i.imgur.com/umswh4i.gif"
 
@@ -51,6 +48,9 @@ DEFAULT_TICKET_DESC  = (
     "Откаты с поставок/взх и откат любого ДМ не позднее месячной давности."
 )
 DEFAULT_TICKET_IMAGE = "https://i.imgur.com/71VIhBL.png"
+
+# Гифка при одобрении заявки (в ЛС) — та же картинка, что и в панели заявок
+APPROVE_GIF_URL = DEFAULT_TICKET_IMAGE
 
 # ─────────────────────────────────────────────
 # ХРАНИЛИЩЕ
@@ -94,6 +94,19 @@ warns_db: dict = {}
 
 # { guild_id: { 1: role_id, 2: role_id, 3: role_id } }
 warn_roles: dict = {}
+
+# 🎖 КАБИНЕТ РЕКРУТА
+# { guild_id: { user_id: { "approved": int, "rejected": int } } }
+recruit_stats: dict = {}
+
+# { guild_id: channel_id } — канал логов выдачи варнов рекрутами
+warn_log_channels: dict = {}
+
+# { guild_id: { user_id: { "channel_id": int, "message_id": int } } } — сообщение лога варна (удаляется при снятии)
+warn_log_messages: dict = {}
+
+# { guild_id: { "channel_id": int, "message_id": int, "text": str|None, "image_url": str|None } }
+recruit_cabinet_panels: dict = {}
 
 # 🛒 ПАНЕЛЬ МАГАЗИНА
 # { guild_id: { "channel_id": int, "message_id": int } }
@@ -139,14 +152,16 @@ vzp_roles: dict = {}
 # 🔫 ВТОРАЯ РОЛЬ ВЗП { guild_id: role_id }
 vzp_roles2: dict = {}
 
-# 🏎 ВТОРАЯ РОЛЬ МП { guild_id: role_id }
-mp_roles2: dict = {}
-
 # ⛏ РОЛЬ ВЗХ { guild_id: role_id }
 vzh_roles: dict = {}
 
 # ⛏ ВТОРАЯ РОЛЬ ВЗХ { guild_id: role_id }
 vzh_roles2: dict = {}
+
+# 📅 РАСПИСАНИЕ ВЗХ ПО ФРАКЦИЯМ { guild_id: "banda" | "mafia" }
+# Банды: Пн+Ср+Пт+Вс, Мафии: Вт+Чт+Сб+Вс — используется, чтобы !vzh 20:00
+# правильно определял дату сбора, даже если создаётся за несколько дней до самого ВЗХ.
+vzh_schedule_settings: dict = {}
 
 # 🎯 ВТОРАЯ РОЛЬ LIST/РЕАКИ { guild_id: role_id }
 list_roles2: dict = {}
@@ -159,7 +174,7 @@ BACKUP_AVAILABLE_FILES = [
     "data.json", "points.json", "chips.json", "roulette.json",
 ]
 
-# 🎯 РОЛИ ДОСТУПА К КОМАНДАМ СБОРОВ { guild_id: { "vzp": [role_id,...], "mp": [...], "list": [...] } }
+# 🎯 РОЛИ ДОСТУПА К КОМАНДАМ СБОРОВ { guild_id: { "vzp": [role_id,...], "vzh": [...], "list": [...] } }
 event_command_roles: dict = {}
 
 # 🔒 ПРИВАТНЫЕ КОМНАТЫ
@@ -283,7 +298,7 @@ def is_admin_ctx(ctx) -> bool:
     return ctx.author.guild_permissions.administrator
 
 def can_run_event(ctx, event_type: str) -> bool:
-    """Проверка доступа к командам сборов (!vzp, !mp, !list). Админ всегда может."""
+    """Проверка доступа к командам сборов (!vzp, !vzh, !list). Админ всегда может."""
     if is_admin_ctx(ctx):
         return True
     allowed = event_command_roles.get(ctx.guild.id, {}).get(event_type, [])
@@ -322,6 +337,43 @@ tree = bot.tree
 # ─────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────
+
+# Расписание ВЗХ по фракциям (datetime.weekday(): Пн=0 ... Вс=6)
+VZH_FACTION_WEEKDAYS = {
+    "banda": {0, 2, 4, 6},   # Пн, Ср, Пт, Вс
+    "mafia": {1, 3, 5, 6},   # Вт, Чт, Сб, Вс
+}
+VZH_FACTION_LABELS = {"banda": "🔫 Банды", "mafia": "🕴 Мафии"}
+VZH_WEEKDAY_NAMES  = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+
+
+def get_vzh_faction(guild_id: int) -> str:
+    return vzh_schedule_settings.get(guild_id, "banda")
+
+
+def _vzh_schedule_str(faction: str) -> str:
+    days = sorted(VZH_FACTION_WEEKDAYS.get(faction, VZH_FACTION_WEEKDAYS["banda"]))
+    return "+".join(VZH_WEEKDAY_NAMES[d] for d in days)
+
+
+def next_vzh_datetime(anchor: datetime, hour: int, minute: int, faction: str) -> datetime:
+    """Ближайшая дата (начиная с anchor), попадающая в расписание ВЗХ для фракции,
+    на которую ещё не наступило указанное время. Не просто «завтра», а конкретный
+    день недели по хардкод-расписанию — так !vzh, созданный за пару дней до сбора,
+    не путает сегодня/завтра."""
+    allowed = VZH_FACTION_WEEKDAYS.get(faction, VZH_FACTION_WEEKDAYS["banda"])
+    for delta in range(8):
+        candidate_date = (anchor + timedelta(days=delta)).date()
+        if candidate_date.weekday() not in allowed:
+            continue
+        candidate = datetime.combine(candidate_date, anchor.time()).replace(
+            hour=hour, minute=minute, second=0, microsecond=0
+        )
+        if candidate >= anchor:
+            return candidate
+    return anchor.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+
 def declension(n: int) -> str:
     mod10, mod100 = n % 10, n % 100
     if 11 <= mod100 <= 19:
@@ -646,6 +698,76 @@ async def update_thread_list(message_id: int):
         pass
 
 
+def _find_event_by_thread(thread_id: int):
+    """Находит сбор по ID его треда с обсуждением."""
+    for mid, data in event_lists.items():
+        if data.get("thread_id") == thread_id:
+            return mid, data
+    return None, None
+
+
+async def _handle_thread_slot_pick(message: discord.Message):
+    """Альтернатива кнопкам: если написать номер слота в треде сбора — занимает/освобождает его."""
+    content = message.content.strip()
+    if not content.isdigit():
+        return
+
+    message_id, data = _find_event_by_thread(message.channel.id)
+    if not data:
+        return
+    if data.get("closed"):
+        return
+
+    slot_num  = int(content)
+    max_count = data.get("max", 0)
+    if not (1 <= slot_num <= max_count):
+        return
+
+    user_id = message.author.id
+    slots   = data["slots"]
+    reserve = data.setdefault("reserve", [])
+
+    if slots.get(slot_num) == user_id:
+        slots[slot_num] = None
+        reply = f"❌ {message.author.mention} покинул(а) слот **{slot_num}**"
+    elif slots.get(slot_num) is not None:
+        try:
+            await message.channel.send(f"❌ Слот **{slot_num}** уже занят!", delete_after=6)
+        except Exception:
+            pass
+        return
+    else:
+        for s, uid in list(slots.items()):
+            if uid == user_id:
+                slots[s] = None
+        if user_id in reserve:
+            reserve.remove(user_id)
+        slots[slot_num] = user_id
+        reply = f"✅ {message.author.mention} занял(а) слот **{slot_num}**!"
+
+    save_data()
+    try:
+        channel  = bot.get_channel(data["channel_id"])
+        orig_msg = await channel.fetch_message(message_id)
+        embed = build_event_embed(
+            message.guild.id, data["title"], data["max"], slots,
+            data.get("image_url"), data.get("note"),
+            event_time=data.get("event_time"), closed=data.get("closed", False),
+            reserve=reserve,
+            join_mode=data.get("cmd") in ("list", "vzh"),
+        )
+        view = event_view(message_id)
+        await orig_msg.edit(embed=embed, view=view)
+    except Exception:
+        pass
+
+    await update_thread_list(message_id)
+    try:
+        await message.channel.send(reply, delete_after=6)
+    except Exception:
+        pass
+
+
 def build_inactive_embed(guild_id: int) -> discord.Embed:
     entries = list(inactive_list.get(guild_id, {}).items())
     count   = len(entries)
@@ -749,6 +871,17 @@ def remove_warn(guild_id: int, user_id: int) -> bool:
     return False
 
 
+def get_recruit_stats(guild_id: int, user_id: int) -> dict:
+    return recruit_stats.get(guild_id, {}).get(user_id, {"approved": 0, "rejected": 0})
+
+
+def bump_recruit_stat(guild_id: int, user_id: int, field: str):
+    g = recruit_stats.setdefault(guild_id, {})
+    u = g.setdefault(user_id, {"approved": 0, "rejected": 0})
+    u[field] = u.get(field, 0) + 1
+    save_data()
+
+
 def build_points_embed(guild_id: int, user_id: int) -> discord.Embed:
     points = get_points(guild_id, user_id)
     chips  = get_chips(guild_id, user_id)
@@ -837,11 +970,11 @@ def save_data():
         "guild_branding":        {str(g): v for g, v in guild_branding.items()},
         "ticket_manager_roles": {str(g): v for g, v in ticket_manager_roles.items()},
         "mp_roles":             {str(g): v for g, v in mp_roles.items()},
-        "mp_roles2":            {str(g): v for g, v in mp_roles2.items()},
         "vzp_roles":            {str(g): v for g, v in vzp_roles.items()},
         "vzp_roles2":           {str(g): v for g, v in vzp_roles2.items()},
         "vzh_roles":            {str(g): v for g, v in vzh_roles.items()},
         "vzh_roles2":           {str(g): v for g, v in vzh_roles2.items()},
+        "vzh_schedule_settings": {str(g): v for g, v in vzh_schedule_settings.items()},
         "list_roles2":          {str(g): v for g, v in list_roles2.items()},
         "warn_roles":           {str(g): {str(k): v for k, v in wr.items()} for g, wr in warn_roles.items()},
         "admin_roles":          {str(g): v for g, v in admin_roles.items()},
@@ -881,6 +1014,10 @@ def save_data():
         "voice_minutes":         {str(g): {str(u): v for u, v in us.items()} for g, us in voice_minutes.items()},
         "stats_panels":          {str(g): v for g, v in stats_panels.items()},
         "backup_settings":       {str(g): v for g, v in backup_settings.items()},
+        "recruit_stats":         {str(g): {str(u): v for u, v in us.items()} for g, us in recruit_stats.items()},
+        "warn_log_channels":     {str(g): v for g, v in warn_log_channels.items()},
+        "warn_log_messages":     {str(g): {str(u): v for u, v in us.items()} for g, us in warn_log_messages.items()},
+        "recruit_cabinet_panels": {str(g): v for g, v in recruit_cabinet_panels.items()},
     }
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -978,8 +1115,8 @@ def load_data():
             vzh_roles[int(g)] = v
         for g, v in data.get("vzh_roles2", {}).items():
             vzh_roles2[int(g)] = v
-        for g, v in data.get("mp_roles2", {}).items():
-            mp_roles2[int(g)] = v
+        for g, v in data.get("vzh_schedule_settings", {}).items():
+            vzh_schedule_settings[int(g)] = v
         for g, v in data.get("list_roles2", {}).items():
             list_roles2[int(g)] = v
         for g, wr in data.get("warn_roles", {}).items():
@@ -997,13 +1134,18 @@ def load_data():
         for g, v in data.get("event_command_roles", {}).items():
             event_command_roles[int(g)] = v
         # Migrate old Russian event_type keys → English
-        _key_map = {"взп": "vzp", "мп": "mp", "реаки": "reaki"}
+        _key_map = {"взп": "vzp", "реаки": "list"}
         for _gid in event_command_roles:
             for _old, _new in _key_map.items():
                 if _old in event_command_roles[_gid]:
                     _vals = event_command_roles[_gid].pop(_old)
                     existing = event_command_roles[_gid].get(_new, [])
                     event_command_roles[_gid][_new] = list(set(existing + _vals))
+            # Старый отдельный "reaki"-бакет (доступ_сбора с типом "реaки") — слить в "list"
+            if "reaki" in event_command_roles[_gid]:
+                _vals = event_command_roles[_gid].pop("reaki")
+                existing = event_command_roles[_gid].get("list", [])
+                event_command_roles[_gid]["list"] = list(set(existing + _vals))
         for g, v in data.get("private_vc_settings", {}).items():
             private_vc_settings[int(g)] = v
         for g, v in data.get("ticket_texts", {}).items():
@@ -1103,6 +1245,16 @@ def load_data():
         for g, v in data.get("backup_settings", {}).items():
             backup_settings[int(g)] = v
 
+        # Кабинет рекрута
+        for g, us in data.get("recruit_stats", {}).items():
+            recruit_stats[int(g)] = {int(u): v for u, v in us.items()}
+        for g, v in data.get("warn_log_channels", {}).items():
+            warn_log_channels[int(g)] = v
+        for g, us in data.get("warn_log_messages", {}).items():
+            warn_log_messages[int(g)] = {int(u): v for u, v in us.items()}
+        for g, v in data.get("recruit_cabinet_panels", {}).items():
+            recruit_cabinet_panels[int(g)] = v
+
         print("OK: Data loaded from data.json")
     except Exception as e:
         print(f"WARNING: Failed to load data: {e}")
@@ -1184,8 +1336,8 @@ class SlotButton(ui.Button):
             data.get("image_url"), data.get("note"),
             event_time=data.get("event_time"), closed=data.get("closed", False),
             reserve=reserve,
+            join_mode=data.get("cmd") in ("list", "vzh"),
         )
-        join_mode=data.get("cmd") in ("list", "vzh"),
         await interaction.response.defer()
         await interaction.message.edit(embed=embed, view=new_view)
         await update_thread_list(self.message_id)
@@ -1515,6 +1667,7 @@ class RejectModal(ui.Modal, title="❌ Причина отклонения"):
             inline=False,
         )
         await self.original_message.edit(embed=new_embed, view=None)
+        bump_recruit_stat(interaction.guild_id, interaction.user.id, "rejected")
 
         try:
             target = await interaction.client.fetch_user(self.applicant_id)
@@ -1937,6 +2090,7 @@ class ApplicationReviewView(ui.View):
             inline=False,
         )
         await interaction.message.edit(embed=new_embed, view=None)
+        bump_recruit_stat(interaction.guild_id, interaction.user.id, "approved")
 
         try:
             target = await interaction.client.fetch_user(applicant_id)
@@ -2288,7 +2442,7 @@ async def set_event_role(ctx, роль: discord.Role):
     await ctx.message.delete()
 
 
-async def _create_event_message(channel, guild, title: str, max_count: int, image_file=None, image_ref: str | None = None, content: str | None = None, event_time: str = None, cmd: str | None = None):
+async def _create_event_message(channel, guild, title: str, max_count: int, image_file=None, image_ref: str | None = None, content: str | None = None, event_time: str = None, cmd: str | None = None, event_datetime: str | None = None):
     """Создаёт сбор: эмбед + тред. Кнопки-слоты идут постранично по 10 шт."""
     if not (1 <= max_count <= 100):
         await channel.send("❌ Количество слотов: от 1 до 100!", delete_after=5)
@@ -2315,6 +2469,7 @@ async def _create_event_message(channel, guild, title: str, max_count: int, imag
         "channel_id": channel.id, "thread_id": None, "thread_msg_id": None,
         "event_time": event_time, "closed": False, "cmd": cmd,
         "created_at": now_msk().isoformat(), "reminded": False,
+        "event_datetime": event_datetime,
     }
 
     view = event_view(msg.id)
@@ -2322,7 +2477,13 @@ async def _create_event_message(channel, guild, title: str, max_count: int, imag
 
     # Тред с живым списком
     try:
-        hint = "✅ Записаться · 🪑 Резерв — запасной список" if join_mode else "Кнопка слота · 🪑 Резерв — запасной список"
+        hint = (
+            "✅ Записаться · 🪑 Резерв — запасной список\n"
+            "Или напиши номер слота (например `23`) прямо в этом треде, чтобы занять его."
+            if join_mode else
+            "Кнопка слота · 🪑 Резерв — запасной список\n"
+            "Или напиши номер слота (например `23`) прямо в этом треде, чтобы занять его."
+        )
         thread = await msg.create_thread(name=f"💬 {title}", auto_archive_duration=1440)
         thread_embed = discord.Embed(
             description=f"📋 Обсуждение сбора **{title}**\n{hint}",
@@ -2344,24 +2505,47 @@ async def _create_event_message(channel, guild, title: str, max_count: int, imag
 # ─────────────────────────────────────────────
 # PREFIX-КОМАНДЫ СБОРОВ
 # ─────────────────────────────────────────────
+async def _extract_event_image(ctx) -> tuple[discord.File | None, str | None]:
+    """Достаёт вложенное к сообщению фото и готовит его для встраивания в эмбед сбора."""
+    if not ctx.message.attachments:
+        return None, None
+    att = ctx.message.attachments[0]
+    try:
+        img_bytes = await att.read()
+        ext       = att.filename.rsplit(".", 1)[-1].lower() if "." in att.filename else "png"
+        safe_name = f"event_image.{ext}"
+        return discord.File(io.BytesIO(img_bytes), filename=safe_name), f"attachment://{safe_name}"
+    except Exception:
+        return None, None
+
+
+def _extract_event_time(название: str, default_title: str) -> tuple[str | None, str]:
+    """Вытаскивает ЧЧ:ММ из начала названия сбора, если оно там указано."""
+    m = re.match(r'^(\d{1,2}:\d{2})\s*(.*)', название)
+    if not m:
+        return None, название
+    return m.group(1), (m.group(2).strip() or default_title)
+
+
+def _event_mentions(guild: discord.Guild, role_ids: list) -> str | None:
+    """Собирает упоминания ролей для тега в сообщении сбора."""
+    mentions = []
+    for rid in role_ids:
+        if not rid:
+            continue
+        r = guild.get_role(rid)
+        if r:
+            mentions.append(r.mention)
+    return " ".join(mentions) if mentions else None
+
+
 @bot.command(name="vzp")
 async def взп_cmd(ctx, количество: int = 10, *, название: str = "ВЗП"):
     """!vzp [количество] [название] — сбор с фото (от лица бота)"""
     if not can_run_event(ctx, "vzp"):
         return await ctx.message.delete()
 
-    image_file = None
-    image_ref  = None
-    if ctx.message.attachments:
-        att = ctx.message.attachments[0]
-        try:
-            img_bytes  = await att.read()
-            ext        = att.filename.rsplit(".", 1)[-1].lower() if "." in att.filename else "png"
-            safe_name  = f"event_image.{ext}"
-            image_file = discord.File(io.BytesIO(img_bytes), filename=safe_name)
-            image_ref  = f"attachment://{safe_name}"
-        except Exception:
-            pass
+    image_file, image_ref = await _extract_event_image(ctx)
 
     try:
         await ctx.message.delete()
@@ -2369,77 +2553,15 @@ async def взп_cmd(ctx, количество: int = 10, *, название: s
         pass
 
     # Тег: роль ВЗП + роль МП + доп. роль
-    mentions = []
-    vzp_role_id = vzp_roles.get(ctx.guild.id)
-    if vzp_role_id:
-        r = ctx.guild.get_role(vzp_role_id)
-        if r:
-            mentions.append(r.mention)
-    mp_role_id = mp_roles.get(ctx.guild.id)
-    if mp_role_id:
-        r = ctx.guild.get_role(mp_role_id)
-        if r:
-            mentions.append(r.mention)
-    vzp2_role_id = vzp_roles2.get(ctx.guild.id)
-    if vzp2_role_id:
-        r = ctx.guild.get_role(vzp2_role_id)
-        if r:
-            mentions.append(r.mention)
-    content = " ".join(mentions) if mentions else None
+    content = _event_mentions(ctx.guild, [
+        vzp_roles.get(ctx.guild.id),
+        mp_roles.get(ctx.guild.id),
+        vzp_roles2.get(ctx.guild.id),
+    ])
 
-    event_time = None
-    m = re.match(r'^(\d{1,2}:\d{2})\s*(.*)', название)
-    if m:
-        event_time = m.group(1)
-        название = m.group(2).strip() or "ВЗП"
+    event_time, название = _extract_event_time(название, "ВЗП")
 
     await _create_event_message(ctx.channel, ctx.guild, название, количество, image_file, image_ref, content=content, event_time=event_time, cmd="vzp")
-
-
-@bot.command(name="mp")
-async def мп_cmd(ctx, количество: int = 10, *, название: str = "МП"):
-    """!mp [количество] [название] — сбор МП"""
-    if not can_run_event(ctx, "mp"):
-        return await ctx.message.delete()
-
-    image_file = None
-    image_ref  = None
-    if ctx.message.attachments:
-        att = ctx.message.attachments[0]
-        try:
-            img_bytes  = await att.read()
-            ext        = att.filename.rsplit(".", 1)[-1].lower() if "." in att.filename else "png"
-            safe_name  = f"event_image.{ext}"
-            image_file = discord.File(io.BytesIO(img_bytes), filename=safe_name)
-            image_ref  = f"attachment://{safe_name}"
-        except Exception:
-            pass
-
-    try:
-        await ctx.message.delete()
-    except Exception:
-        pass
-
-    mentions = []
-    mp_role_id = mp_roles.get(ctx.guild.id)
-    if mp_role_id:
-        r = ctx.guild.get_role(mp_role_id)
-        if r:
-            mentions.append(r.mention)
-    mp2_role_id = mp_roles2.get(ctx.guild.id)
-    if mp2_role_id:
-        r = ctx.guild.get_role(mp2_role_id)
-        if r:
-            mentions.append(r.mention)
-    content = " ".join(mentions) if mentions else None
-
-    event_time = None
-    m = re.match(r'^(\d{1,2}:\d{2})\s*(.*)', название)
-    if m:
-        event_time = m.group(1)
-        название = m.group(2).strip() or "МП"
-
-    await _create_event_message(ctx.channel, ctx.guild, название, количество, image_file, image_ref, content=content, event_time=event_time, cmd="mp")
 
 
 @bot.command(name="vzh")
@@ -2469,38 +2591,23 @@ async def взх_cmd(ctx, *, args: str = ""):
             delete_after=8,
         )
 
-    image_file = None
-    image_ref  = None
-    if ctx.message.attachments:
-        att = ctx.message.attachments[0]
-        try:
-            img_bytes  = await att.read()
-            ext        = att.filename.rsplit(".", 1)[-1].lower() if "." in att.filename else "png"
-            safe_name  = f"event_image.{ext}"
-            image_file = discord.File(io.BytesIO(img_bytes), filename=safe_name)
-            image_ref  = f"attachment://{safe_name}"
-        except Exception:
-            pass
+    image_file, image_ref = await _extract_event_image(ctx)
 
     try:
         await ctx.message.delete()
     except Exception:
         pass
 
-    mentions = []
-    vzh_role_id = vzh_roles.get(ctx.guild.id)
-    if vzh_role_id:
-        r = ctx.guild.get_role(vzh_role_id)
-        if r:
-            mentions.append(r.mention)
-    vzh2_role_id = vzh_roles2.get(ctx.guild.id)
-    if vzh2_role_id:
-        r = ctx.guild.get_role(vzh2_role_id)
-        if r:
-            mentions.append(r.mention)
-    content = " ".join(mentions) if mentions else None
+    content = _event_mentions(ctx.guild, [
+        vzh_roles.get(ctx.guild.id),
+        vzh_roles2.get(ctx.guild.id),
+    ])
 
-    await _create_event_message(ctx.channel, ctx.guild, название, количество, image_file, image_ref, content=content, event_time=event_time, cmd="vzh")
+    hour, minute = map(int, event_time.split(":"))
+    faction = get_vzh_faction(ctx.guild.id)
+    event_datetime = next_vzh_datetime(now_msk(), hour, minute, faction).isoformat()
+
+    await _create_event_message(ctx.channel, ctx.guild, название, количество, image_file, image_ref, content=content, event_time=event_time, cmd="vzh", event_datetime=event_datetime)
 
 
 @bot.command(name="роль_взп")
@@ -2522,14 +2629,14 @@ async def set_vzp_role(ctx, роль: discord.Role):
 
 @bot.command(name="роль_мп")
 async def set_mp_role(ctx, роль: discord.Role):
-    """!роль_мп @роль — настроить роль МП для тега в !vzp и !mp"""
+    """!роль_мп @роль — настроить роль МП для тега в !vzp"""
     if not is_admin_ctx(ctx):
         return await ctx.message.delete()
     mp_roles[ctx.guild.id] = роль.id
     save_data()
     embed = discord.Embed(
         title="✅ Роль МП настроена",
-        description=f"В `!vzp` и `!mp` будет тегаться {роль.mention}",
+        description=f"В `!vzp` будет тегаться {роль.mention}",
         color=discord.Color.green(),
     )
     embed.set_footer(text="DIAMOND", icon_url=_footer(ctx.guild.id))
@@ -2588,23 +2695,6 @@ async def set_vzh_role2(ctx, роль: discord.Role):
     await ctx.message.delete()
 
 
-@bot.command(name="роль_мп2")
-async def set_mp_role2(ctx, роль: discord.Role):
-    """!роль_мп2 @роль — дополнительная роль для тега в !mp"""
-    if not is_admin_ctx(ctx):
-        return await ctx.message.delete()
-    mp_roles2[ctx.guild.id] = роль.id
-    save_data()
-    embed = discord.Embed(
-        title="✅ Доп. роль МП настроена",
-        description=f"В `!mp` дополнительно будет тегаться {роль.mention}",
-        color=discord.Color.green(),
-    )
-    embed.set_footer(text="DIAMOND", icon_url=_footer(ctx.guild.id))
-    await ctx.send(embed=embed, delete_after=10)
-    await ctx.message.delete()
-
-
 @bot.command(name="роль_реаки2")
 async def set_event_role2(ctx, роль: discord.Role):
     """!роль_реаки2 @роль — дополнительная роль для тега в !list"""
@@ -2629,8 +2719,7 @@ async def set_event_role2(ctx, роль: discord.Role):
 )
 @app_commands.choices(тип=[
     app_commands.Choice(name="vzp", value="vzp"),
-    app_commands.Choice(name="mp", value="mp"),
-    app_commands.Choice(name="reaki", value="reaki"),
+    app_commands.Choice(name="reaki", value="list"),
     app_commands.Choice(name="vzh", value="vzh"),
 ])
 async def slash_event_access_add(interaction: discord.Interaction, тип: str, роль: discord.Role):
@@ -2658,8 +2747,7 @@ async def slash_event_access_add(interaction: discord.Interaction, тип: str, 
 )
 @app_commands.choices(тип=[
     app_commands.Choice(name="vzp", value="vzp"),
-    app_commands.Choice(name="mp", value="mp"),
-    app_commands.Choice(name="reaki", value="reaki"),
+    app_commands.Choice(name="reaki", value="list"),
     app_commands.Choice(name="vzh", value="vzh"),
 ])
 async def slash_event_access_remove(interaction: discord.Interaction, тип: str, роль: discord.Role):
@@ -2680,42 +2768,19 @@ async def реаки_cmd(ctx, количество: int = 10, *, названи�
     if not can_run_event(ctx, "list"):
         return await ctx.message.delete()
 
-    image_file = None
-    image_ref  = None
-    if ctx.message.attachments:
-        att = ctx.message.attachments[0]
-        try:
-            img_bytes  = await att.read()
-            ext        = att.filename.rsplit(".", 1)[-1].lower() if "." in att.filename else "png"
-            safe_name  = f"event_image.{ext}"
-            image_file = discord.File(io.BytesIO(img_bytes), filename=safe_name)
-            image_ref  = f"attachment://{safe_name}"
-        except Exception:
-            pass
+    image_file, image_ref = await _extract_event_image(ctx)
 
     try:
         await ctx.message.delete()
     except Exception:
         pass
 
-    mentions = []
-    event_role_id = event_roles.get(ctx.guild.id)
-    if event_role_id:
-        r = ctx.guild.get_role(event_role_id)
-        if r:
-            mentions.append(r.mention)
-    list2_role_id = list_roles2.get(ctx.guild.id)
-    if list2_role_id:
-        r = ctx.guild.get_role(list2_role_id)
-        if r:
-            mentions.append(r.mention)
-    content = " ".join(mentions) if mentions else None
+    content = _event_mentions(ctx.guild, [
+        event_roles.get(ctx.guild.id),
+        list_roles2.get(ctx.guild.id),
+    ])
 
-    event_time = None
-    m = re.match(r'^(\d{1,2}:\d{2})\s*(.*)', название)
-    if m:
-        event_time = m.group(1)
-        название = m.group(2).strip() or "Реакции"
+    event_time, название = _extract_event_time(название, "Реакции")
 
     await _create_event_message(ctx.channel, ctx.guild, название, количество, image_file, image_ref, content=content, event_time=event_time, cmd="list")
 
@@ -2756,7 +2821,7 @@ async def spisok_cmd(ctx):
 
 
 # ─────────────────────────────────────────────
-# СЛЭШ-КОМАНДЫ СБОРОВ (/vzp, /mp, /reaki)
+# СЛЭШ-КОМАНДЫ СБОРОВ (/vzp, /reaki)
 # ─────────────────────────────────────────────
 
 @tree.command(name="vzp", description="Создать сбор ВЗП (тегает роли ВЗП + МП)")
@@ -2769,51 +2834,13 @@ async def slash_vzp(interaction: discord.Interaction, количество: int 
     if not can_run_event_slash(interaction, "vzp"):
         return await interaction.response.send_message("❌ Недостаточно прав!", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
-    mentions = []
-    vzp_role_id = vzp_roles.get(interaction.guild_id)
-    if vzp_role_id:
-        r = interaction.guild.get_role(vzp_role_id)
-        if r:
-            mentions.append(r.mention)
-    mp_role_id = mp_roles.get(interaction.guild_id)
-    if mp_role_id:
-        r = interaction.guild.get_role(mp_role_id)
-        if r:
-            mentions.append(r.mention)
-    vzp2_role_id = vzp_roles2.get(interaction.guild_id)
-    if vzp2_role_id:
-        r = interaction.guild.get_role(vzp2_role_id)
-        if r:
-            mentions.append(r.mention)
-    content = " ".join(mentions) if mentions else None
+    content = _event_mentions(interaction.guild, [
+        vzp_roles.get(interaction.guild_id),
+        mp_roles.get(interaction.guild_id),
+        vzp_roles2.get(interaction.guild_id),
+    ])
     await _create_event_message(interaction.channel, interaction.guild, название, количество, content=content, event_time=время, cmd="vzp")
     await interaction.followup.send("✅ Сбор ВЗП создан!", ephemeral=True)
-
-
-@tree.command(name="mp", description="Создать сбор МП (тегает роль МП)")
-@app_commands.describe(
-    количество="Количество слотов (по умолчанию 10)",
-    название="Название сбора (по умолчанию МП)",
-    время="Время сбора (например 20:30)",
-)
-async def slash_mp(interaction: discord.Interaction, количество: int = 10, название: str = "МП", время: str = None):
-    if not can_run_event_slash(interaction, "mp"):
-        return await interaction.response.send_message("❌ Недостаточно прав!", ephemeral=True)
-    await interaction.response.defer(ephemeral=True)
-    mentions = []
-    mp_role_id = mp_roles.get(interaction.guild_id)
-    if mp_role_id:
-        r = interaction.guild.get_role(mp_role_id)
-        if r:
-            mentions.append(r.mention)
-    mp2_role_id = mp_roles2.get(interaction.guild_id)
-    if mp2_role_id:
-        r = interaction.guild.get_role(mp2_role_id)
-        if r:
-            mentions.append(r.mention)
-    content = " ".join(mentions) if mentions else None
-    await _create_event_message(interaction.channel, interaction.guild, название, количество, content=content, event_time=время, cmd="mp")
-    await interaction.followup.send("✅ Сбор МП создан!", ephemeral=True)
 
 
 @tree.command(name="reaki", description="Создать сбор реакций (тегает роль реаки)")
@@ -2823,21 +2850,13 @@ async def slash_mp(interaction: discord.Interaction, количество: int =
     время="Время сбора (например 20:30)",
 )
 async def slash_reaki(interaction: discord.Interaction, количество: int = 10, название: str = "Реакции", время: str = None):
-    if not can_run_event_slash(interaction, "reaki"):
+    if not can_run_event_slash(interaction, "list"):
         return await interaction.response.send_message("❌ Недостаточно прав!", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
-    mentions = []
-    event_role_id = event_roles.get(interaction.guild_id)
-    if event_role_id:
-        r = interaction.guild.get_role(event_role_id)
-        if r:
-            mentions.append(r.mention)
-    list2_role_id = list_roles2.get(interaction.guild_id)
-    if list2_role_id:
-        r = interaction.guild.get_role(list2_role_id)
-        if r:
-            mentions.append(r.mention)
-    content = " ".join(mentions) if mentions else None
+    content = _event_mentions(interaction.guild, [
+        event_roles.get(interaction.guild_id),
+        list_roles2.get(interaction.guild_id),
+    ])
     await _create_event_message(interaction.channel, interaction.guild, название, количество, content=content, event_time=время, cmd="list")
     await interaction.followup.send("✅ Сбор реакций создан!", ephemeral=True)
 
@@ -3684,7 +3703,7 @@ async def slash_settings(interaction: discord.Interaction):
         name="🎯 Доступ к сборам",
         value=(
             f"`!vzp`: {roles_list_str('vzp')}\n"
-            f"`!mp`: {roles_list_str('mp')}\n"
+            f"`!vzh`: {roles_list_str('vzh')}\n"
             f"`!list`: {roles_list_str('list')}"
         ),
         inline=False,
@@ -3772,7 +3791,7 @@ def build_cfg_main_embed(guild: discord.Guild) -> discord.Embed:
     ), inline=True)
     e.add_field(name="🎯 Сборы", value=(
         f"ВЗП: {_ecr('vzp')}\n"
-        f"МП: {_ecr('mp')}\n"
+        f"ВЗХ: {_ecr('vzh')}\n"
         f"Реаки: {_ecr('list')}"
     ), inline=True)
     e.add_field(name="🔊 Войс / 🖼 Контент", value=(
@@ -3822,7 +3841,6 @@ def build_cfg_category_embed(guild: discord.Guild, category: str) -> discord.Emb
         e.description = (
             f"**ВЗП2:** {_rs(guild, vzp_roles2.get(gid))}\n"
             f"**ВЗХ2:** {_rs(guild, vzh_roles2.get(gid))}\n"
-            f"**МП2:** {_rs(guild, mp_roles2.get(gid))}\n"
             f"**Реаки2:** {_rs(guild, list_roles2.get(gid))}\n\n"
             f"*Тегаются дополнительно вместе с основными ролями.*"
         )
@@ -3856,15 +3874,21 @@ def build_cfg_category_embed(guild: discord.Guild, category: str) -> discord.Emb
         e.title = "🎯 Доступ к командам сбора"
         e.description = (
             f"**!vzp:**\n{_ecr('vzp')}\n\n"
-            f"**!mp:**\n{_ecr('mp')}\n\n"
+            f"**!vzh:**\n{_ecr('vzh')}\n\n"
             f"**!list:**\n{_ecr('list')}"
         )
-    elif category in ("event_взп", "event_мп", "event_реаки"):
+    elif category.startswith("event_"):
         etype = category.split("_", 1)[1]
         ecr = event_command_roles.get(gid, {})
         ids = ecr.get(etype, [])
         e.title = f"🎯 Доступ к !{etype}"
         e.description = f"Роли:\n{_roles_list(guild, ids)}\n\nДобавь или убери роль ниже."
+        if etype == "vzh":
+            faction = get_vzh_faction(gid)
+            e.description += (
+                f"\n\n**Фракция для расписания ВЗХ:** {VZH_FACTION_LABELS.get(faction, faction)}\n"
+                f"Дни: {_vzh_schedule_str(faction)}"
+            )
     elif category == "voice":
         vs = voice_reward_settings.get(gid, {})
         e.title = "🔊 Голосовые каналы"
@@ -3941,28 +3965,46 @@ def build_cfg_category_embed(guild: discord.Guild, category: str) -> discord.Emb
             f"**Файлы для отправки:**\n"
             + ("\n".join(f"✅ {fn}" for fn in files) if files else "*ничего не выбрано*")
         )
+    elif category == "recruit_cabinet":
+        rcp = recruit_cabinet_panels.get(gid, {})
+        e.title = "🎖 Кабинет рекрута"
+        e.description = (
+            f"**Канал лога варнов:** {_cs(guild, warn_log_channels.get(gid))}\n"
+            f"**Текст панели:** {'✅' if rcp.get('text') else '⚠️ нет'}\n"
+            f"**Фото панели:** {'✅' if rcp.get('image_url') else '⚠️ нет'}\n\n"
+            f"*Варны, выданные через кабинет рекрута, снимаются только за деньги.*"
+        )
     return e
 
 
 # ── Главное меню ─────────────────────────────────────────────────────────────
 
+# Категории настроек разбиты на 2 страницы, чтобы панель не была перегружена.
+CFG_CATEGORY_PAGES = [
+    [
+        discord.SelectOption(label="📋 Заявки",        value="tickets", description="Менеджер, пинг, лог, доступ, текст"),
+        discord.SelectOption(label="🔑 Роли системы",  value="roles",   description="МП, ВЗП, ВЗХ, Реаки"),
+        discord.SelectOption(label="⚠️ Варн-роли",     value="warns",   description="Роли за 1, 2, 3 предупреждения"),
+        discord.SelectOption(label="📢 Каналы / Логи", value="logs",    description="Логи и feedback канал/роль"),
+        discord.SelectOption(label="🎯 Сборы",          value="events",  description="Доступ к !vzp !vzh !list"),
+        discord.SelectOption(label="🔊 Голосовые",      value="voice",   description="Баллы, категории, исключения"),
+        discord.SelectOption(label="🛎 Приватные комнаты", value="private", description="Триггер, категория, канал панели"),
+    ],
+    [
+        discord.SelectOption(label="👥 Состав семьи",   value="roster",  description="Роли основного/академии, панель"),
+        discord.SelectOption(label="📜 Контракты",      value="contracts", description="Роль тега, текст, фото панели"),
+        discord.SelectOption(label="🧩 Прочее",         value="misc",    description="Обзвон, общак, роль магазина"),
+        discord.SelectOption(label="🖼 Контент",        value="content", description="Тексты, фото, ссылки панелей"),
+        discord.SelectOption(label="💾 Бэкапы",         value="backup",  description="Канал, файлы и период автобэкапа"),
+        discord.SelectOption(label="🎖 Кабинет рекрута", value="recruit_cabinet", description="Варны, статистика, лог варнов"),
+    ],
+]
+
+
 class CfgCategorySelect(ui.Select):
-    def __init__(self):
-        options = [
-            discord.SelectOption(label="📋 Заявки",        value="tickets", description="Менеджер, пинг, лог, доступ, текст"),
-            discord.SelectOption(label="🔑 Роли системы",  value="roles",   description="МП, ВЗП, ВЗХ, Реаки"),
-            discord.SelectOption(label="⚠️ Варн-роли",     value="warns",   description="Роли за 1, 2, 3 предупреждения"),
-            discord.SelectOption(label="📢 Каналы / Логи", value="logs",    description="Логи и feedback канал/роль"),
-            discord.SelectOption(label="🎯 Сборы",          value="events",  description="Доступ к !vzp !mp !list"),
-            discord.SelectOption(label="🔊 Голосовые",      value="voice",   description="Баллы, категории, исключения"),
-            discord.SelectOption(label="🛎 Приватные комнаты", value="private", description="Триггер, категория, канал панели"),
-            discord.SelectOption(label="👥 Состав семьи",   value="roster",  description="Роли основного/академии, панель"),
-            discord.SelectOption(label="📜 Контракты",      value="contracts", description="Роль тега, текст, фото панели"),
-            discord.SelectOption(label="🧩 Прочее",         value="misc",    description="Обзвон, общак, роль магазина"),
-            discord.SelectOption(label="🖼 Контент",        value="content", description="Тексты, фото, ссылки панелей"),
-            discord.SelectOption(label="💾 Бэкапы",         value="backup",  description="Канал, файлы и период автобэкапа"),
-        ]
-        super().__init__(placeholder="Выбери категорию настроек…", options=options, row=0)
+    def __init__(self, page: int = 1):
+        options = CFG_CATEGORY_PAGES[page - 1]
+        super().__init__(placeholder=f"Выбери категорию настроек… (стр. {page}/{len(CFG_CATEGORY_PAGES)})", options=options, row=0)
 
     async def callback(self, interaction: discord.Interaction):
         cat   = self.values[0]
@@ -3972,9 +4014,22 @@ class CfgCategorySelect(ui.Select):
 
 
 class CfgMainView(ui.View):
-    def __init__(self):
+    def __init__(self, page: int = 1):
         super().__init__(timeout=300)
-        self.add_item(CfgCategorySelect())
+        self.add_item(CfgCategorySelect(page))
+
+        total_pages = len(CFG_CATEGORY_PAGES)
+        if total_pages > 1:
+            if page > 1:
+                prev_btn = _cfg_btn("◀ Страница назад", row=1)
+                async def _prev(inter, p=page): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView(page=p - 1))
+                prev_btn.callback = _prev
+                self.add_item(prev_btn)
+            if page < total_pages:
+                next_btn = _cfg_btn("Страница вперёд ▶", row=1)
+                async def _next(inter, p=page): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView(page=p + 1))
+                next_btn.callback = _next
+                self.add_item(next_btn)
 
 
 # ── Универсальные модали ──────────────────────────────────────────────────────
@@ -4245,8 +4300,7 @@ class _CfgRoles2View(ui.View):
         self.add_item(back)
         self.add_item(_CfgRolePicker(lambda gid, rid: vzp_roles2.__setitem__(gid, rid), "roles2", 1, "⚔️ ВЗП2 — доп. роль тега"))
         self.add_item(_CfgRolePicker(lambda gid, rid: vzh_roles2.__setitem__(gid, rid), "roles2", 2, "⛏ ВЗХ2 — доп. роль тега"))
-        self.add_item(_CfgRolePicker(lambda gid, rid: mp_roles2.__setitem__(gid, rid), "roles2", 3, "🏎 МП2 — доп. роль тега"))
-        self.add_item(_CfgRolePicker(lambda gid, rid: list_roles2.__setitem__(gid, rid), "roles2", 4, "🎯 Реаки2 — доп. роль тега"))
+        self.add_item(_CfgRolePicker(lambda gid, rid: list_roles2.__setitem__(gid, rid), "roles2", 3, "🎯 Реаки2 — доп. роль тега"))
 
 
 class _CfgWarnsView(ui.View):
@@ -4311,7 +4365,7 @@ class _CfgEventsView(ui.View):
         back.callback = _back
         self.add_item(back)
 
-        for label, etype in [("⚔️ ВЗП", "vzp"), ("🏎 МП", "mp"), ("🎯 Реаки", "list")]:
+        for label, etype in [("⚔️ ВЗП", "vzp"), ("🕐 ВЗХ", "vzh"), ("🎯 Реаки", "list")]:
             btn = _cfg_btn(label, style=discord.ButtonStyle.primary, row=1)
             async def _cb(inter, et=etype):
                 await inter.response.edit_message(
@@ -4341,6 +4395,20 @@ class _CfgEventTypeView(ui.View):
         self.add_item(_CfgRoleAddPicker(get_list, cat_key, 1, f"➕ Добавить роль к !{etype}"))
         current = (event_command_roles.get(gid) or {}).get(etype, [])
         self.add_item(_CfgRoleRemoveSelect(guild, current, get_list, cat_key, 2, f"➖ Убрать роль из !{etype}"))
+
+        if etype == "vzh":
+            faction = get_vzh_faction(gid)
+            other = "mafia" if faction == "banda" else "banda"
+            toggle = _cfg_btn(f"📅 Расписание: {VZH_FACTION_LABELS[faction]} → {VZH_FACTION_LABELS[other]}", row=3)
+            async def _toggle(inter, new_faction=other):
+                vzh_schedule_settings[inter.guild_id] = new_faction
+                save_data()
+                await inter.response.edit_message(
+                    embed=build_cfg_category_embed(inter.guild, cat_key),
+                    view=_CfgEventTypeView(inter.guild, etype),
+                )
+            toggle.callback = _toggle
+            self.add_item(toggle)
 
 
 class _CfgVoiceView(ui.View):
@@ -4631,6 +4699,43 @@ class _CfgBackupView(ui.View):
         self.add_item(_CfgBackupIntervalSelect(gid))
 
 
+class _CfgRecruitCabinetView(ui.View):
+    def __init__(self, guild: discord.Guild):
+        super().__init__(timeout=300)
+        gid = guild.id
+        rcp = recruit_cabinet_panels.get(gid, {})
+
+        back = _cfg_btn("◀ Назад", row=0)
+        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView())
+        back.callback = _back
+        self.add_item(back)
+
+        btn_text = _cfg_btn("✏️ Текст панели", row=0)
+        async def _text(inter):
+            await inter.response.send_modal(_CfgTextModal(
+                "Кабинет рекрута — текст", "Текст описания", rcp.get("text", ""),
+                lambda gid_, v: recruit_cabinet_panels.setdefault(gid_, {}).__setitem__("text", v),
+                "recruit_cabinet", inter.message,
+                style=discord.TextStyle.paragraph, refresh_fn=_refresh_recruit_cabinet_panel,
+            ))
+        btn_text.callback = _text
+        self.add_item(btn_text)
+
+        btn_photo = _cfg_btn("🖼 Фото панели", row=0)
+        async def _photo(inter):
+            await inter.response.send_modal(_CfgTextModal(
+                "Кабинет рекрута — фото", "Ссылка на изображение", rcp.get("image_url", ""),
+                lambda gid_, v: recruit_cabinet_panels.setdefault(gid_, {}).__setitem__("image_url", v),
+                "recruit_cabinet", inter.message, refresh_fn=_refresh_recruit_cabinet_panel,
+            ))
+        btn_photo.callback = _photo
+        self.add_item(btn_photo)
+
+        self.add_item(_CfgChannelPicker(
+            lambda gid_, cid: warn_log_channels.__setitem__(gid_, cid),
+            "recruit_cabinet", 1, "⚠️ Лог варнов — выбери канал"))
+
+
 # ── Фабрика view по ключу категории ──────────────────────────────────────────
 
 def _cfg_make_view(guild: discord.Guild, cat: str) -> ui.View:
@@ -4651,6 +4756,7 @@ def _cfg_make_view(guild: discord.Guild, cat: str) -> ui.View:
     if cat == "misc":           return _CfgMiscView(guild)
     if cat == "content":        return _CfgContentView(guild)
     if cat == "backup":         return _CfgBackupView(guild)
+    if cat == "recruit_cabinet": return _CfgRecruitCabinetView(guild)
     return CfgMainView()
 
 
@@ -5051,6 +5157,8 @@ async def on_message(message: discord.Message):
     if gid not in message_counts:
         message_counts[gid] = {}
     message_counts[gid][uid] = message_counts[gid].get(uid, 0) + 1
+    if isinstance(message.channel, discord.Thread):
+        await _handle_thread_slot_pick(message)
     await bot.process_commands(message)
 
 
@@ -5122,6 +5230,7 @@ async def on_ready():
     bot.add_view(FeedbackPanelView())
     bot.add_view(ObshakView())
     bot.add_view(PersonalCabinetView())
+    bot.add_view(RecruitCabinetView())
     for guild_id in guild_shop_items:
         bot.add_view(ShopView(guild_id))
     for guild_id, panel in ticket_panels.items():
@@ -6449,6 +6558,286 @@ async def slash_cabinet_invite(interaction: discord.Interaction, ссылка: s
 
 
 # ─────────────────────────────────────────────
+# КАБИНЕТ РЕКРУТА
+# ─────────────────────────────────────────────
+
+DEFAULT_RECRUIT_CABINET_TEXT = "Кабинет рекрута: статистика по заявкам и выдача варнов."
+
+
+def build_recruit_cabinet_embed(guild_id: int) -> discord.Embed:
+    settings  = recruit_cabinet_panels.get(guild_id, {})
+    text      = settings.get("text") or DEFAULT_RECRUIT_CABINET_TEXT
+    image_url = settings.get("image_url")
+
+    embed = discord.Embed(
+        title="🎖 Кабинет рекрута",
+        description=text,
+        color=0x2b2d31,
+    )
+    if image_url:
+        embed.set_image(url=image_url)
+    embed.set_footer(text="DIAMOND", icon_url=_footer(guild_id))
+    return embed
+
+
+async def _refresh_recruit_cabinet_panel(guild: discord.Guild):
+    settings = recruit_cabinet_panels.get(guild.id)
+    if not settings or not settings.get("message_id"):
+        return
+    try:
+        ch  = guild.get_channel(settings["channel_id"])
+        msg = await ch.fetch_message(settings["message_id"])
+        await msg.edit(embed=build_recruit_cabinet_embed(guild.id), view=RecruitCabinetView())
+    except Exception:
+        pass
+
+
+async def _delete_warn_log_message(guild: discord.Guild, user_id: int):
+    """Удаляет сообщение о варне из канала логов (варн снят)."""
+    ref = warn_log_messages.get(guild.id, {}).pop(user_id, None)
+    if ref is None:
+        return
+    save_data()
+    try:
+        ch = guild.get_channel(ref["channel_id"])
+        if ch:
+            msg = await ch.fetch_message(ref["message_id"])
+            await msg.delete()
+    except Exception:
+        pass
+
+
+class RemoveWarnModal(ui.Modal, title="✅ Снять варн"):
+    user_id_input = ui.TextInput(label="ID пользователя", placeholder="123456789012345678", required=True)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        try:
+            target_id = int(str(self.user_id_input).strip())
+        except ValueError:
+            return await interaction.response.send_message("❌ Некорректный ID пользователя.", ephemeral=True)
+
+        if not remove_warn(guild.id, target_id):
+            return await interaction.response.send_message("❌ У пользователя нет варнов.", ephemeral=True)
+
+        member = guild.get_member(target_id)
+        guild_warn_roles = warn_roles.get(guild.id, {})
+        roles_to_remove = [guild.get_role(rid) for rid in guild_warn_roles.values() if guild.get_role(rid)]
+        if member:
+            try:
+                await member.remove_roles(*[r for r in roles_to_remove if r], reason="Снятие варна")
+            except Exception:
+                pass
+
+        await _delete_warn_log_message(guild, target_id)
+
+        embed = discord.Embed(
+            title="✅ Warn снят",
+            description=f"У {member.mention if member else f'<@{target_id}>'} снят warn",
+            color=discord.Color.green(),
+            timestamp=datetime.now(),
+        )
+        embed.add_field(name="Снял", value=interaction.user.mention, inline=False)
+        embed.set_footer(text="DIAMOND", icon_url=_footer(guild.id))
+        await interaction.response.send_message(embed=embed)
+
+        if member:
+            try:
+                dm_embed = discord.Embed(
+                    title="✅ С вас снят варн",
+                    color=discord.Color.green(),
+                    timestamp=datetime.now(),
+                )
+                dm_embed.set_footer(text="DIAMOND", icon_url=_footer(guild.id))
+                await member.send(embed=dm_embed)
+            except Exception:
+                pass
+
+
+class IssueWarnModal(ui.Modal, title="⚠️ Выдать варн — только деньги"):
+    user_id_input = ui.TextInput(label="ID пользователя", placeholder="123456789012345678", required=True)
+    reason_input  = ui.TextInput(label="Причина", style=discord.TextStyle.paragraph, required=True)
+    level_input   = ui.TextInput(label="Номер варна (1, 2 или 3)", placeholder="1", required=True, max_length=1)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+
+        try:
+            target_id = int(str(self.user_id_input).strip())
+        except ValueError:
+            return await interaction.response.send_message("❌ Некорректный ID пользователя.", ephemeral=True)
+
+        try:
+            level = int(str(self.level_input).strip())
+        except ValueError:
+            level = 0
+        if level not in (1, 2, 3):
+            return await interaction.response.send_message("❌ Номер варна должен быть 1, 2 или 3.", ephemeral=True)
+
+        member = guild.get_member(target_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(target_id)
+            except Exception:
+                return await interaction.response.send_message("❌ Пользователь не найден на сервере.", ephemeral=True)
+
+        reason = str(self.reason_input)
+
+        await interaction.response.defer(ephemeral=True)
+
+        set_warn(guild.id, member.id, level, reason, interaction.user.id)
+
+        guild_warn_roles = warn_roles.get(guild.id, {})
+        roles_to_remove = [guild.get_role(rid) for rid in guild_warn_roles.values() if guild.get_role(rid)]
+        new_role = guild.get_role(guild_warn_roles.get(level))
+        try:
+            await member.remove_roles(*[r for r in roles_to_remove if r and r != new_role], reason="Обновление варн-роли")
+            if new_role:
+                await member.add_roles(new_role, reason=f"Warn {level}/3")
+        except Exception:
+            pass
+
+        log_embed = discord.Embed(
+            title="⚠️ Выдан варн",
+            color=0x2b2d31,
+            timestamp=datetime.now(),
+        )
+        log_embed.add_field(name="Пользователь", value=member.mention, inline=True)
+        log_embed.add_field(name="Варн", value=f"**{level}/3**", inline=True)
+        log_embed.add_field(name="Снять можно", value="💵 только деньгами", inline=True)
+        log_embed.add_field(name="Причина", value=reason, inline=False)
+        log_embed.add_field(name="Выдал", value=interaction.user.mention, inline=False)
+        log_embed.set_footer(text="DIAMOND", icon_url=_footer(guild.id))
+
+        log_ch_id = warn_log_channels.get(guild.id)
+        log_ch = guild.get_channel(log_ch_id) if log_ch_id else None
+        if log_ch:
+            try:
+                await _delete_warn_log_message(guild, member.id)
+                msg = await log_ch.send(embed=log_embed)
+                warn_log_messages.setdefault(guild.id, {})[member.id] = {
+                    "channel_id": log_ch.id,
+                    "message_id": msg.id,
+                }
+                save_data()
+            except Exception:
+                pass
+
+        try:
+            dm_embed = discord.Embed(
+                title="⚠️ Вы получили warn",
+                description=f"**Причина:** {reason}\n**Варны:** {level}/3\n**Оплата:** 💵 только деньгами",
+                color=discord.Color.red(),
+                timestamp=datetime.now(),
+            )
+            dm_embed.add_field(name="Модератор", value=interaction.user.mention)
+            dm_embed.set_footer(text="DIAMOND", icon_url=_footer(guild.id))
+            await member.send(embed=dm_embed)
+        except Exception:
+            pass
+
+        await interaction.followup.send(f"✅ Варн {level}/3 выдан {member.mention}.", ephemeral=True)
+
+
+class RecruitCabinetView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.button(label="Статистика", emoji="📊", style=discord.ButtonStyle.secondary, custom_id="recruit_cabinet_stats", row=0)
+    async def btn_stats(self, interaction: discord.Interaction, button: ui.Button):
+        stats = get_recruit_stats(interaction.guild_id, interaction.user.id)
+        embed = discord.Embed(
+            title="📊 Статистика рекрута",
+            color=0x2b2d31,
+            timestamp=datetime.now(),
+        )
+        embed.add_field(name="✅ Одобрено заявок", value=str(stats.get("approved", 0)), inline=True)
+        embed.add_field(name="❌ Отклонено заявок", value=str(stats.get("rejected", 0)), inline=True)
+        embed.set_footer(text="DIAMOND", icon_url=_footer(interaction.guild_id))
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @ui.button(label="Варн (только деньги)", emoji="💵", style=discord.ButtonStyle.danger, custom_id="recruit_cabinet_warn_money", row=0)
+    async def btn_warn_money(self, interaction: discord.Interaction, button: ui.Button):
+        if not is_ticket_manager(interaction):
+            return await interaction.response.send_message("❌ Недостаточно прав!", ephemeral=True)
+        await interaction.response.send_modal(IssueWarnModal())
+
+    @ui.button(label="Снять варн", emoji="✅", style=discord.ButtonStyle.success, custom_id="recruit_cabinet_warn_remove", row=0)
+    async def btn_warn_remove(self, interaction: discord.Interaction, button: ui.Button):
+        if not is_ticket_manager(interaction):
+            return await interaction.response.send_message("❌ Недостаточно прав!", ephemeral=True)
+        await interaction.response.send_modal(RemoveWarnModal())
+
+
+@tree.command(name="кабинет_рекрута", description="Создать панель кабинета рекрута в текущем канале")
+async def slash_recruit_cabinet(interaction: discord.Interaction):
+    if not is_admin(interaction):
+        return await interaction.response.send_message("❌ Недостаточно прав!", ephemeral=True)
+
+    gid = interaction.guild_id
+
+    existing = recruit_cabinet_panels.get(gid)
+    if existing and existing.get("message_id"):
+        try:
+            old_ch  = interaction.guild.get_channel(existing["channel_id"])
+            old_msg = await old_ch.fetch_message(existing["message_id"])
+            await old_msg.delete()
+        except Exception:
+            pass
+
+    prev  = recruit_cabinet_panels.get(gid, {})
+    embed = build_recruit_cabinet_embed(gid)
+    msg   = await interaction.channel.send(embed=embed, view=RecruitCabinetView())
+
+    recruit_cabinet_panels[gid] = {
+        "channel_id": interaction.channel_id,
+        "message_id": msg.id,
+        "text":       prev.get("text"),
+        "image_url":  prev.get("image_url"),
+    }
+    save_data()
+    await interaction.response.send_message("✅ Кабинет рекрута создан.", ephemeral=True)
+
+
+@tree.command(name="кабинет_рекрута_фото", description="Изменить фото панели кабинета рекрута")
+@app_commands.describe(url="Ссылка на изображение")
+async def slash_recruit_cabinet_photo(interaction: discord.Interaction, url: str):
+    if not is_admin(interaction):
+        return await interaction.response.send_message("❌ Недостаточно прав!", ephemeral=True)
+    gid = interaction.guild_id
+    if gid not in recruit_cabinet_panels:
+        recruit_cabinet_panels[gid] = {}
+    recruit_cabinet_panels[gid]["image_url"] = url
+    save_data()
+    await _refresh_recruit_cabinet_panel(interaction.guild)
+    await interaction.response.send_message("✅ Фото кабинета рекрута обновлено!", ephemeral=True)
+
+
+@tree.command(name="кабинет_рекрута_текст", description="Изменить текст описания кабинета рекрута")
+@app_commands.describe(текст="Текст под заголовком")
+async def slash_recruit_cabinet_text(interaction: discord.Interaction, текст: str):
+    if not is_admin(interaction):
+        return await interaction.response.send_message("❌ Недостаточно прав!", ephemeral=True)
+    gid = interaction.guild_id
+    if gid not in recruit_cabinet_panels:
+        recruit_cabinet_panels[gid] = {}
+    recruit_cabinet_panels[gid]["text"] = текст
+    save_data()
+    await _refresh_recruit_cabinet_panel(interaction.guild)
+    await interaction.response.send_message("✅ Текст кабинета рекрута обновлён!", ephemeral=True)
+
+
+@tree.command(name="канал_варнов", description="Установить канал для логов выдачи варнов рекрутами")
+@app_commands.describe(канал="Текстовый канал для логов варнов")
+async def slash_warn_log_channel(interaction: discord.Interaction, канал: discord.TextChannel):
+    if not is_admin(interaction):
+        return await interaction.response.send_message("❌ Недостаточно прав!", ephemeral=True)
+    warn_log_channels[interaction.guild_id] = канал.id
+    save_data()
+    await interaction.response.send_message(f"✅ Канал логов варнов установлен: {канал.mention}", ephemeral=True)
+
+
+# ─────────────────────────────────────────────
 # ГОЛОСОВЫЕ КАНАЛЫ — НАЧИСЛЕНИЕ ВАЛЮТЫ
 # ─────────────────────────────────────────────
 
@@ -7451,18 +7840,24 @@ async def vzh_reminder_loop():
         if ev.get("cmd") != "vzh" or ev.get("closed") or ev.get("reminded"):
             continue
         try:
-            m = _re.match(r"^(\d{1,2}):(\d{2})$", (ev.get("event_time") or "").strip())
-            if not m:
-                continue
-            hour, minute = int(m.group(1)), int(m.group(2))
-            created_at = ev.get("created_at")
-            anchor = datetime.fromisoformat(created_at) if created_at else now_msk_dt
-            try:
-                target = anchor.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            except ValueError:
-                continue
-            if target < anchor:
-                target += timedelta(days=1)
+            event_dt_str = ev.get("event_datetime")
+            if event_dt_str:
+                # Точная дата/время, посчитанные при создании сбора по расписанию ВЗХ фракции
+                target = datetime.fromisoformat(event_dt_str)
+            else:
+                # Старые сборы (созданы до появления event_datetime) — прежняя эвристика "сегодня/завтра"
+                m = _re.match(r"^(\d{1,2}):(\d{2})$", (ev.get("event_time") or "").strip())
+                if not m:
+                    continue
+                hour, minute = int(m.group(1)), int(m.group(2))
+                created_at = ev.get("created_at")
+                anchor = datetime.fromisoformat(created_at) if created_at else now_msk_dt
+                try:
+                    target = anchor.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                except ValueError:
+                    continue
+                if target < anchor:
+                    target += timedelta(days=1)
             remind_at = target - timedelta(minutes=30)
             if not (remind_at <= now_msk_dt < target):
                 continue
