@@ -851,13 +851,14 @@ def get_warns(guild_id: int, user_id: int) -> dict:
     return warns_db.get(guild_id, {}).get(user_id, None)
 
 
-def set_warn(guild_id: int, user_id: int, count: int, reason: str, moderator_id: int):
+def set_warn(guild_id: int, user_id: int, count: int, reason: str, moderator_id: int, smoothies: int = 0):
     if guild_id not in warns_db:
         warns_db[guild_id] = {}
     warns_db[guild_id][user_id] = {
         "warns": count,
         "reason": reason,
         "moderator": moderator_id,
+        "smoothies": smoothies,
         "timestamp": datetime.now(),
     }
     save_data()
@@ -3972,7 +3973,7 @@ def build_cfg_category_embed(guild: discord.Guild, category: str) -> discord.Emb
             f"**Канал лога варнов:** {_cs(guild, warn_log_channels.get(gid))}\n"
             f"**Текст панели:** {'✅' if rcp.get('text') else '⚠️ нет'}\n"
             f"**Фото панели:** {'✅' if rcp.get('image_url') else '⚠️ нет'}\n\n"
-            f"*Варны, выданные через кабинет рекрута, снимаются только за деньги.*"
+            f"*Варны, выданные через кабинет рекрута, снимаются только за смузи.*"
         )
     return e
 
@@ -6666,10 +6667,11 @@ class RemoveWarnModal(ui.Modal, title="✅ Снять варн"):
                 pass
 
 
-class IssueWarnModal(ui.Modal, title="⚠️ Выдать варн — только деньги"):
-    user_id_input = ui.TextInput(label="ID пользователя", placeholder="123456789012345678", required=True)
-    reason_input  = ui.TextInput(label="Причина", style=discord.TextStyle.paragraph, required=True)
-    level_input   = ui.TextInput(label="Номер варна (1, 2 или 3)", placeholder="1", required=True, max_length=1)
+class IssueWarnModal(ui.Modal, title="⚠️ Выдать варн — только смузи"):
+    user_id_input   = ui.TextInput(label="ID пользователя", placeholder="123456789012345678", required=True)
+    reason_input    = ui.TextInput(label="Причина", style=discord.TextStyle.paragraph, required=True)
+    level_input     = ui.TextInput(label="Номер варна (1, 2 или 3)", placeholder="1", required=True, max_length=1)
+    smoothies_input = ui.TextInput(label="Количество смузи", placeholder="1", required=True, max_length=3)
 
     async def on_submit(self, interaction: discord.Interaction):
         guild = interaction.guild
@@ -6686,6 +6688,13 @@ class IssueWarnModal(ui.Modal, title="⚠️ Выдать варн — толь�
         if level not in (1, 2, 3):
             return await interaction.response.send_message("❌ Номер варна должен быть 1, 2 или 3.", ephemeral=True)
 
+        try:
+            smoothies = int(str(self.smoothies_input).strip())
+        except ValueError:
+            smoothies = -1
+        if smoothies < 0:
+            return await interaction.response.send_message("❌ Количество смузи должно быть неотрицательным числом.", ephemeral=True)
+
         member = guild.get_member(target_id)
         if member is None:
             try:
@@ -6697,7 +6706,7 @@ class IssueWarnModal(ui.Modal, title="⚠️ Выдать варн — толь�
 
         await interaction.response.defer(ephemeral=True)
 
-        set_warn(guild.id, member.id, level, reason, interaction.user.id)
+        set_warn(guild.id, member.id, level, reason, interaction.user.id, smoothies)
 
         guild_warn_roles = warn_roles.get(guild.id, {})
         roles_to_remove = [guild.get_role(rid) for rid in guild_warn_roles.values() if guild.get_role(rid)]
@@ -6716,7 +6725,7 @@ class IssueWarnModal(ui.Modal, title="⚠️ Выдать варн — толь�
         )
         log_embed.add_field(name="Пользователь", value=member.mention, inline=True)
         log_embed.add_field(name="Варн", value=f"**{level}/3**", inline=True)
-        log_embed.add_field(name="Снять можно", value="💵 только деньгами", inline=True)
+        log_embed.add_field(name="Снять можно", value=f"🥤 только смузи ({smoothies} шт.)", inline=True)
         log_embed.add_field(name="Причина", value=reason, inline=False)
         log_embed.add_field(name="Выдал", value=interaction.user.mention, inline=False)
         log_embed.set_footer(text="DIAMOND", icon_url=_footer(guild.id))
@@ -6738,7 +6747,7 @@ class IssueWarnModal(ui.Modal, title="⚠️ Выдать варн — толь�
         try:
             dm_embed = discord.Embed(
                 title="⚠️ Вы получили warn",
-                description=f"**Причина:** {reason}\n**Варны:** {level}/3\n**Оплата:** 💵 только деньгами",
+                description=f"**Причина:** {reason}\n**Варны:** {level}/3\n**Оплата:** 🥤 только смузи ({smoothies} шт.)",
                 color=discord.Color.red(),
                 timestamp=datetime.now(),
             )
@@ -6768,7 +6777,7 @@ class RecruitCabinetView(ui.View):
         embed.set_footer(text="DIAMOND", icon_url=_footer(interaction.guild_id))
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @ui.button(label="Варн (только деньги)", emoji="💵", style=discord.ButtonStyle.danger, custom_id="recruit_cabinet_warn_money", row=0)
+    @ui.button(label="Варн (только смузи)", emoji="🥤", style=discord.ButtonStyle.danger, custom_id="recruit_cabinet_warn_money", row=0)
     async def btn_warn_money(self, interaction: discord.Interaction, button: ui.Button):
         if not is_ticket_manager(interaction):
             return await interaction.response.send_message("❌ Недостаточно прав!", ephemeral=True)
