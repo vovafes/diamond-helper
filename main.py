@@ -81,6 +81,19 @@ inactive_panels: dict = {}
 # { guild_id: { user_id: { "reason": str, "return_date": str, "since": datetime } } }
 inactive_list: dict = {}
 
+# 🪞 MIRROR — второй, независимый набор АФК/инактива (для семьи на втором игровом сервере)
+# { guild_id: { "message_id": int, "channel_id": int } }
+afk_panels_mirror: dict = {}
+
+# { guild_id: { user_id: { "reason": str, "return_time": str, "since": datetime } } }
+afk_list_mirror: dict = {}
+
+# { guild_id: { "message_id": int, "channel_id": int } }
+inactive_panels_mirror: dict = {}
+
+# { guild_id: { user_id: { "reason": str, "return_date": str, "since": datetime } } }
+inactive_list_mirror: dict = {}
+
 # 💰 БАЛЛЫ И ШТРАФЫ
 # { guild_id: { user_id: int } }
 points_db: dict = {}
@@ -781,7 +794,7 @@ def build_inactive_embed(guild_id: int) -> discord.Embed:
         lines = "*Список пуст — никто не в инактиве*"
 
     embed = discord.Embed(
-        title="📅 Люди, находящиеся в инактиве:",
+        title="📅 Люди, находящиеся в инактиве (Murrieta):",
         description=f"• Всего в инактиве **{count}** {declension(count)}\n\n{lines}",
         color=discord.Color.orange(),
         timestamp=datetime.now(),
@@ -805,7 +818,55 @@ def build_afk_embed(guild_id: int) -> discord.Embed:
         lines = "*Список пуст — никто не в АФК*"
 
     embed = discord.Embed(
-        title="⏳ Люди, находящиеся в АФК:",
+        title="⏳ Люди, находящиеся в АФК (Murrieta):",
+        description=f"• Всего в АФК **{count}** {declension(count)}\n\n{lines}",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(),
+    )
+    if _afk_img(guild_id):
+        embed.set_image(url=_afk_img(guild_id))
+    embed.set_footer(text="DIAMOND", icon_url=_footer(guild_id))
+    return embed
+
+
+def build_inactive_embed_mirror(guild_id: int) -> discord.Embed:
+    entries = list(inactive_list_mirror.get(guild_id, {}).items())
+    count   = len(entries)
+
+    if entries:
+        lines = "\n\n".join(
+            f"**{i+1})** <@{uid}> Причина: {d['reason']}\nВернусь: `{d['return_date']}`"
+            for i, (uid, d) in enumerate(entries)
+        )
+    else:
+        lines = "*Список пуст — никто не в инактиве*"
+
+    embed = discord.Embed(
+        title="📅 Люди, находящиеся в инактиве (Mirror):",
+        description=f"• Всего в инактиве **{count}** {declension(count)}\n\n{lines}",
+        color=discord.Color.orange(),
+        timestamp=datetime.now(),
+    )
+    if _afk_img(guild_id):
+        embed.set_image(url=_afk_img(guild_id))
+    embed.set_footer(text="DIAMOND", icon_url=_footer(guild_id))
+    return embed
+
+
+def build_afk_embed_mirror(guild_id: int) -> discord.Embed:
+    entries = list(afk_list_mirror.get(guild_id, {}).items())
+    count   = len(entries)
+
+    if entries:
+        lines = "\n\n".join(
+            f"**{i+1})** <@{uid}> Причина: {d['reason']}\nВернусь в: `{d['return_time']}`"
+            for i, (uid, d) in enumerate(entries)
+        )
+    else:
+        lines = "*Список пуст — никто не в АФК*"
+
+    embed = discord.Embed(
+        title="⏳ Люди, находящиеся в АФК (Mirror):",
         description=f"• Всего в АФК **{count}** {declension(count)}\n\n{lines}",
         color=discord.Color.blurple(),
         timestamp=datetime.now(),
@@ -936,23 +997,21 @@ def save_data():
                 for k, v in info.items()
             }
 
-    afk_list_serial = {}
-    for g, users in afk_list.items():
-        afk_list_serial[str(g)] = {}
-        for u, info in users.items():
-            afk_list_serial[str(g)][str(u)] = {
-                k: (v.isoformat() if isinstance(v, datetime) else v)
-                for k, v in info.items()
-            }
+    def _serialize_user_dict(src: dict) -> dict:
+        out = {}
+        for g, users in src.items():
+            out[str(g)] = {}
+            for u, info in users.items():
+                out[str(g)][str(u)] = {
+                    k: (v.isoformat() if isinstance(v, datetime) else v)
+                    for k, v in info.items()
+                }
+        return out
 
-    inactive_list_serial = {}
-    for g, users in inactive_list.items():
-        inactive_list_serial[str(g)] = {}
-        for u, info in users.items():
-            inactive_list_serial[str(g)][str(u)] = {
-                k: (v.isoformat() if isinstance(v, datetime) else v)
-                for k, v in info.items()
-            }
+    afk_list_serial              = _serialize_user_dict(afk_list)
+    inactive_list_serial         = _serialize_user_dict(inactive_list)
+    afk_list_mirror_serial       = _serialize_user_dict(afk_list_mirror)
+    inactive_list_mirror_serial  = _serialize_user_dict(inactive_list_mirror)
 
     event_lists_serial = {}
     for mid, ev in event_lists.items():
@@ -990,6 +1049,10 @@ def save_data():
         "afk_panels":           {str(g): v for g, v in afk_panels.items()},
         "inactive_list":        inactive_list_serial,
         "inactive_panels":      {str(g): v for g, v in inactive_panels.items()},
+        "afk_list_mirror":         afk_list_mirror_serial,
+        "afk_panels_mirror":       {str(g): v for g, v in afk_panels_mirror.items()},
+        "inactive_list_mirror":    inactive_list_mirror_serial,
+        "inactive_panels_mirror":  {str(g): v for g, v in inactive_panels_mirror.items()},
         "event_lists":          event_lists_serial,
         "shop_panels":          {str(g): v for g, v in shop_panels.items()},
         "shop_log_channels":    {str(g): v for g, v in shop_log_channels.items()},
@@ -1174,6 +1237,27 @@ def load_data():
         for g, v in data.get("inactive_panels", {}).items():
             inactive_panels[int(g)] = v
 
+        # АФК/инактив — Mirror
+        for g, users in data.get("afk_list_mirror", {}).items():
+            afk_list_mirror[int(g)] = {}
+            for u, info in users.items():
+                afk_list_mirror[int(g)][int(u)] = {
+                    k: (datetime.fromisoformat(v) if k == "since" and v else v)
+                    for k, v in info.items()
+                }
+        for g, v in data.get("afk_panels_mirror", {}).items():
+            afk_panels_mirror[int(g)] = v
+
+        for g, users in data.get("inactive_list_mirror", {}).items():
+            inactive_list_mirror[int(g)] = {}
+            for u, info in users.items():
+                inactive_list_mirror[int(g)][int(u)] = {
+                    k: (datetime.fromisoformat(v) if k == "since" and v else v)
+                    for k, v in info.items()
+                }
+        for g, v in data.get("inactive_panels_mirror", {}).items():
+            inactive_panels_mirror[int(g)] = v
+
         # Сборы
         for mid, ev in data.get("event_lists", {}).items():
             event_lists[int(mid)] = {
@@ -1281,6 +1365,30 @@ async def refresh_inactive_message(guild: discord.Guild):
         channel = guild.get_channel(panel["channel_id"])
         msg     = await channel.fetch_message(panel["message_id"])
         await msg.edit(embed=build_inactive_embed(guild.id))
+    except Exception:
+        pass
+
+
+async def refresh_afk_message_mirror(guild: discord.Guild):
+    panel = afk_panels_mirror.get(guild.id)
+    if not panel:
+        return
+    try:
+        channel = guild.get_channel(panel["channel_id"])
+        msg     = await channel.fetch_message(panel["message_id"])
+        await msg.edit(embed=build_afk_embed_mirror(guild.id))
+    except Exception:
+        pass
+
+
+async def refresh_inactive_message_mirror(guild: discord.Guild):
+    panel = inactive_panels_mirror.get(guild.id)
+    if not panel:
+        return
+    try:
+        channel = guild.get_channel(panel["channel_id"])
+        msg     = await channel.fetch_message(panel["message_id"])
+        await msg.edit(embed=build_inactive_embed_mirror(guild.id))
     except Exception:
         pass
 
@@ -1901,6 +2009,148 @@ class InactiveView(ui.View):
         del inactive_list[guild_id][user_id]
         save_data()
         await refresh_inactive_message(interaction.guild)
+        await interaction.followup.send("✅ Вы убраны из инактива. С возвращением!", ephemeral=True)
+
+
+# ─── MIRROR — второй, независимый набор АФК/инактива ───
+class AfkModalMirror(ui.Modal, title="🕐 Уход в АФК (Mirror)"):
+    reason      = ui.TextInput(label="Причина", placeholder="На работе / Учёба / Дела...", required=True)
+    return_time = ui.TextInput(label="Вернусь в (например 18:30)", placeholder="18:30", required=True)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild_id = interaction.guild_id
+        user_id  = interaction.user.id
+
+        raw = str(self.return_time).strip()
+        import re as _re
+        m = _re.match(r"^([01]?\d|2[0-3]):([0-5]\d)$", raw)
+        if not m:
+            return await interaction.response.send_message(
+                "⚠️ Неверный формат времени. Используй формат **ЧЧ:ММ**, например `18:30`",
+                ephemeral=True,
+            )
+        raw = f"{int(m.group(1)):02d}:{m.group(2)}"
+
+        if guild_id not in afk_list_mirror:
+            afk_list_mirror[guild_id] = {}
+
+        afk_list_mirror[guild_id][user_id] = {
+            "reason":      str(self.reason),
+            "return_time": raw,
+            "since":       now_msk(),
+        }
+        save_data()
+
+        await refresh_afk_message_mirror(interaction.guild)
+
+        embed = discord.Embed(
+            description=(
+                f"🕐 Вы добавлены в АФК-список (Mirror)\n"
+                f"**Причина:** {self.reason}\n"
+                f"**Вернусь в:** `{raw}`"
+            ),
+            color=discord.Color.blurple(),
+        )
+        embed.set_footer(text="DIAMOND", icon_url=_footer(interaction.guild_id))
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class AfkViewMirror(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.button(label="Отошел АФК", style=discord.ButtonStyle.secondary, emoji="🕐", custom_id="afk_away_mirror")
+    async def afk_away(self, interaction: discord.Interaction, button: ui.Button):
+        guild_id = interaction.guild_id
+        if guild_id in afk_list_mirror and interaction.user.id in afk_list_mirror[guild_id]:
+            return await interaction.response.send_message("⚠️ Вы уже в АФК-списке!", ephemeral=True)
+        await interaction.response.send_modal(AfkModalMirror())
+
+    @ui.button(label="Вернулся из АФК", style=discord.ButtonStyle.success, emoji="✅", custom_id="afk_back_mirror")
+    async def afk_back(self, interaction: discord.Interaction, button: ui.Button):
+        guild_id = interaction.guild_id
+        user_id  = interaction.user.id
+        if guild_id not in afk_list_mirror or user_id not in afk_list_mirror[guild_id]:
+            return await interaction.response.send_message("⚠️ Вас нет в АФК-списке!", ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True)
+        del afk_list_mirror[guild_id][user_id]
+        save_data()
+        await refresh_afk_message_mirror(interaction.guild)
+        await interaction.followup.send("✅ Вы убраны из АФК-списка. С возвращением!", ephemeral=True)
+
+
+class InactiveModalMirror(ui.Modal, title="📅 Уход в инактив (Mirror)"):
+    reason      = ui.TextInput(label="Причина", placeholder="Отпуск / Работа / Дела...", required=True)
+    return_date = ui.TextInput(label="Вернусь (дата, например 25.04.2026)", placeholder="25.04.2026", required=True)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild_id = interaction.guild_id
+        user_id  = interaction.user.id
+
+        raw = str(self.return_date).strip()
+        import re as _re
+        m = _re.match(r"^(\d{2})\.(\d{2})\.(\d{4})$", raw)
+        if not m:
+            return await interaction.response.send_message(
+                "⚠️ Неверный формат даты. Используй формат **ДД.ММ.ГГГГ**, например `25.04.2026`",
+                ephemeral=True,
+            )
+        day, mon, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if not (1 <= mon <= 12 and 1 <= day <= 31 and year >= 2020):
+            return await interaction.response.send_message(
+                "⚠️ Некорректная дата. Проверь, что день и месяц указаны правильно.",
+                ephemeral=True,
+            )
+
+        await interaction.response.defer(ephemeral=True)
+
+        if guild_id not in inactive_list_mirror:
+            inactive_list_mirror[guild_id] = {}
+
+        inactive_list_mirror[guild_id][user_id] = {
+            "reason":      str(self.reason),
+            "return_date": raw,
+            "since":       now_msk(),
+        }
+        save_data()
+
+        await refresh_inactive_message_mirror(interaction.guild)
+
+        embed = discord.Embed(
+            description=(
+                f"📅 Вы добавлены в список инактива (Mirror)\n"
+                f"**Причина:** {self.reason}\n"
+                f"**Вернусь:** `{raw}`"
+            ),
+            color=discord.Color.orange(),
+        )
+        embed.set_footer(text="DIAMOND", icon_url=_footer(interaction.guild_id))
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+class InactiveViewMirror(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.button(label="Ухожу в инактив", style=discord.ButtonStyle.secondary, emoji="📅", custom_id="inactive_away_mirror")
+    async def inactive_away(self, interaction: discord.Interaction, button: ui.Button):
+        guild_id = interaction.guild_id
+        if guild_id in inactive_list_mirror and interaction.user.id in inactive_list_mirror[guild_id]:
+            return await interaction.response.send_message("⚠️ Вы уже в списке инактива!", ephemeral=True)
+        await interaction.response.send_modal(InactiveModalMirror())
+
+    @ui.button(label="Вернулся из инактива", style=discord.ButtonStyle.success, emoji="✅", custom_id="inactive_back_mirror")
+    async def inactive_back(self, interaction: discord.Interaction, button: ui.Button):
+        guild_id = interaction.guild_id
+        user_id  = interaction.user.id
+        if guild_id not in inactive_list_mirror or user_id not in inactive_list_mirror[guild_id]:
+            return await interaction.response.send_message("⚠️ Вас нет в списке инактива!", ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True)
+        del inactive_list_mirror[guild_id][user_id]
+        save_data()
+        await refresh_inactive_message_mirror(interaction.guild)
         await interaction.followup.send("✅ Вы убраны из инактива. С возвращением!", ephemeral=True)
 
 
@@ -2959,6 +3209,93 @@ async def slash_inactive_clear(interaction: discord.Interaction):
     await interaction.response.send_message(f"✅ Список инактива очищен ({count} {declension(count)} убрано).", ephemeral=True)
 
 
+# ─── MIRROR — второй, независимый набор АФК/инактива ───
+@bot.command(name="афк_mirror")
+async def create_afk_mirror(ctx):
+    if not is_admin_ctx(ctx):
+        return await ctx.message.delete()
+    """!афк_mirror — создать панель АФК (Mirror) в этом канале"""
+    guild_id = ctx.guild.id
+    if guild_id not in afk_list_mirror:
+        afk_list_mirror[guild_id] = {}
+
+    view  = AfkViewMirror()
+    embed = build_afk_embed_mirror(guild_id)
+    msg   = await ctx.send(embed=embed, view=view)
+    afk_panels_mirror[guild_id] = {"message_id": msg.id, "channel_id": ctx.channel.id}
+    save_data()
+    await ctx.message.delete()
+
+
+@bot.command(name="инактив_mirror")
+async def create_inactive_mirror(ctx):
+    if not is_admin_ctx(ctx):
+        return await ctx.message.delete()
+    """!инактив_mirror — создать панель инактива (Mirror) в этом канале"""
+    guild_id = ctx.guild.id
+    if guild_id not in inactive_list_mirror:
+        inactive_list_mirror[guild_id] = {}
+
+    view  = InactiveViewMirror()
+    embed = build_inactive_embed_mirror(guild_id)
+    msg   = await ctx.send(embed=embed, view=view)
+    inactive_panels_mirror[guild_id] = {"message_id": msg.id, "channel_id": ctx.channel.id}
+    save_data()
+    await ctx.message.delete()
+
+
+@tree.command(name="афк_снять_mirror", description="Убрать пользователя из АФК-списка Mirror (админ)")
+@app_commands.describe(пользователь="Кого убрать из списка АФК (Mirror)")
+async def slash_afk_remove_mirror(interaction: discord.Interaction, пользователь: discord.Member):
+    if not is_admin(interaction):
+        return await interaction.response.send_message("❌ Недостаточно прав!", ephemeral=True)
+    guild_id = interaction.guild_id
+    if guild_id not in afk_list_mirror or пользователь.id not in afk_list_mirror[guild_id]:
+        return await interaction.response.send_message(f"⚠️ {пользователь.mention} не в АФК-списке.", ephemeral=True)
+    del afk_list_mirror[guild_id][пользователь.id]
+    save_data()
+    await refresh_afk_message_mirror(interaction.guild)
+    await interaction.response.send_message(f"✅ {пользователь.mention} убран(а) из АФК-списка.", ephemeral=True)
+
+
+@tree.command(name="афк_очистить_mirror", description="Очистить весь АФК-список Mirror (админ)")
+async def slash_afk_clear_mirror(interaction: discord.Interaction):
+    if not is_admin(interaction):
+        return await interaction.response.send_message("❌ Недостаточно прав!", ephemeral=True)
+    guild_id = interaction.guild_id
+    count = len(afk_list_mirror.get(guild_id, {}))
+    afk_list_mirror[guild_id] = {}
+    save_data()
+    await refresh_afk_message_mirror(interaction.guild)
+    await interaction.response.send_message(f"✅ АФК-список очищен ({count} {declension(count)} убрано).", ephemeral=True)
+
+
+@tree.command(name="инактив_снять_mirror", description="Убрать пользователя из списка инактива Mirror (админ)")
+@app_commands.describe(пользователь="Кого убрать из списка инактива (Mirror)")
+async def slash_inactive_remove_mirror(interaction: discord.Interaction, пользователь: discord.Member):
+    if not is_admin(interaction):
+        return await interaction.response.send_message("❌ Недостаточно прав!", ephemeral=True)
+    guild_id = interaction.guild_id
+    if guild_id not in inactive_list_mirror or пользователь.id not in inactive_list_mirror[guild_id]:
+        return await interaction.response.send_message(f"⚠️ {пользователь.mention} не в списке инактива.", ephemeral=True)
+    del inactive_list_mirror[guild_id][пользователь.id]
+    save_data()
+    await refresh_inactive_message_mirror(interaction.guild)
+    await interaction.response.send_message(f"✅ {пользователь.mention} убран(а) из инактива.", ephemeral=True)
+
+
+@tree.command(name="инактив_очистить_mirror", description="Очистить весь список инактива Mirror (админ)")
+async def slash_inactive_clear_mirror(interaction: discord.Interaction):
+    if not is_admin(interaction):
+        return await interaction.response.send_message("❌ Недостаточно прав!", ephemeral=True)
+    guild_id = interaction.guild_id
+    count = len(inactive_list_mirror.get(guild_id, {}))
+    inactive_list_mirror[guild_id] = {}
+    save_data()
+    await refresh_inactive_message_mirror(interaction.guild)
+    await interaction.response.send_message(f"✅ Список инактива очищен ({count} {declension(count)} убрано).", ephemeral=True)
+
+
 @tree.command(name="тикет", description="Создать панель заявок")
 @app_commands.describe(
     канал_панели="Канал, куда отправить кнопку заявки",
@@ -3077,7 +3414,7 @@ class TicketTextModal(ui.Modal, title="✏️ Текст панели заяво
         required=True,
     )
     image_input = ui.TextInput(
-        label="Ссылка на картинку (оставь пустым — без картинки)",
+        label="Ссылка на картинку (необязательно)",
         required=False,
         placeholder="https://...",
     )
@@ -3206,7 +3543,7 @@ async def slash_shop(interaction: discord.Interaction):
 
 
 class AddItemModal(ui.Modal, title="🛒 Добавить товар"):
-    name        = ui.TextInput(label="Название товара", placeholder="Снять варн", required=True)
+    name        = ui.TextInput(label="Название товара", placeholder="Снять варн", required=True, max_length=80)
     price       = ui.TextInput(label="Цена (баллы)", placeholder="500", required=True)
     emoji       = ui.TextInput(label="Эмодзи", placeholder="⚠️", required=False, max_length=8)
     description = ui.TextInput(label="Описание", placeholder="Снимает один варн", required=False)
@@ -3232,6 +3569,13 @@ class AddItemModal(ui.Modal, title="🛒 Добавить товар"):
 
         if gid not in guild_shop_items:
             guild_shop_items[gid] = {}
+
+        if len(guild_shop_items[gid]) >= 25:
+            return await interaction.response.send_message(
+                "❌ В магазине уже 25 товаров — это максимум, который умеет отобразить Discord. "
+                "Удалите ненужный товар через `/убрать_товар`, прежде чем добавлять новый.",
+                ephemeral=True,
+            )
 
         import time
         item_id = str(int(time.time()))
@@ -5195,6 +5539,8 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         if not interaction.response.is_done():
             await interaction.response.send_message("❌ Недостаточно прав!", ephemeral=True)
     else:
+        cmd_name = interaction.command.name if interaction.command else "?"
+        print(f"WARNING: app command '{cmd_name}' failed: {error!r}")
         if not interaction.response.is_done():
             await interaction.response.send_message("❌ Ошибка выполнения команды.", ephemeral=True)
 
@@ -5235,6 +5581,8 @@ async def on_ready():
     load_chips()
     bot.add_view(AfkView())
     bot.add_view(InactiveView())
+    bot.add_view(AfkViewMirror())
+    bot.add_view(InactiveViewMirror())
     bot.add_view(PrivateVCView())
     bot.add_view(ApplicationReviewView())
     bot.add_view(PostCloseView())
@@ -5537,6 +5885,13 @@ async def vzp_monitor_loop():
 @vzp_monitor_loop.before_loop
 async def _before_vzp():
     await bot.wait_until_ready()
+
+
+@vzp_monitor_loop.error
+async def vzp_monitor_loop_error(error: Exception):
+    print(f"WARNING: vzp_monitor_loop crashed, restarting: {error}")
+    if not vzp_monitor_loop.is_running():
+        vzp_monitor_loop.start()
 
 
 # ─── Helper: parse channel id from mention or raw id ──────
@@ -5933,6 +6288,13 @@ async def update_stats():
             await msg.edit(embed=embed)
         except Exception:
             stats_panels.pop(guild_id, None)
+
+
+@update_stats.error
+async def update_stats_error(error: Exception):
+    print(f"WARNING: update_stats crashed, restarting: {error}")
+    if not update_stats.is_running():
+        update_stats.start()
 
 
 # ─────────────────────────────────────────────
@@ -6913,6 +7275,13 @@ async def voice_reward_loop():
         save_data()
 
 
+@voice_reward_loop.error
+async def voice_reward_loop_error(error: Exception):
+    print(f"WARNING: voice_reward_loop crashed, restarting: {error}")
+    if not voice_reward_loop.is_running():
+        voice_reward_loop.start()
+
+
 # Счётчик тиков для проверки "в игре, не в войсе"
 _game_check_ticks: dict = {}
 
@@ -6988,6 +7357,13 @@ async def game_activity_check_loop():
             await log_channel.send(embed=embed)
         except Exception:
             pass
+
+
+@game_activity_check_loop.error
+async def game_activity_check_loop_error(error: Exception):
+    print(f"WARNING: game_activity_check_loop crashed, restarting: {error}")
+    if not game_activity_check_loop.is_running():
+        game_activity_check_loop.start()
 
 
 def _get_voice_settings(guild_id: int) -> dict:
@@ -7664,12 +8040,10 @@ async def slash_obshak_all(interaction: discord.Interaction):
 # ТАЙМЕР АФК — авто-удаление по времени HH:MM
 # ─────────────────────────────────────────────
 
-@tasks.loop(minutes=1)
-async def afk_expire_loop():
-    """Каждую минуту проверяет AFK-список и удаляет тех, чьё время вернуться наступило (МСК)."""
+async def _expire_afk_dict(afk_dict: dict, refresh_fn):
     import re as _re
     now_msk_dt = now_msk()
-    for guild_id, users in list(afk_list.items()):
+    for guild_id, users in list(afk_dict.items()):
         expired = []
         for uid, data in users.items():
             try:
@@ -7689,14 +8063,21 @@ async def afk_expire_loop():
         if not expired:
             continue
         for uid in expired:
-            afk_list[guild_id].pop(uid, None)
+            afk_dict[guild_id].pop(uid, None)
         save_data()
         try:
             guild = bot.get_guild(guild_id)
             if guild:
-                await refresh_afk_message(guild)
+                await refresh_fn(guild)
         except Exception as e:
             print(f"WARNING: afk_expire_loop refresh {guild_id}: {e}")
+
+
+@tasks.loop(minutes=1)
+async def afk_expire_loop():
+    """Каждую минуту проверяет AFK-списки (обычный и Mirror) и удаляет тех, чьё время вернуться наступило (МСК)."""
+    await _expire_afk_dict(afk_list, refresh_afk_message)
+    await _expire_afk_dict(afk_list_mirror, refresh_afk_message_mirror)
 
 
 @afk_expire_loop.error
@@ -7710,13 +8091,11 @@ async def afk_expire_loop_error(error: Exception):
 # ТАЙМЕР ИНАКТИВА — авто-удаление по дате ДД.ММ.ГГГГ
 # ─────────────────────────────────────────────
 
-@tasks.loop(hours=1)
-async def inactive_expire_loop():
-    """Каждый час проверяет список инактива и удаляет тех, чья дата возвращения наступила (МСК)."""
+async def _expire_inactive_dict(inactive_dict: dict, refresh_fn):
     import re as _re
     from datetime import date as _date
     today = now_msk().date()
-    for guild_id, users in list(inactive_list.items()):
+    for guild_id, users in list(inactive_dict.items()):
         expired = []
         for uid, entry in users.items():
             try:
@@ -7734,14 +8113,21 @@ async def inactive_expire_loop():
         if not expired:
             continue
         for uid in expired:
-            inactive_list[guild_id].pop(uid, None)
+            inactive_dict[guild_id].pop(uid, None)
         save_data()
         try:
             guild = bot.get_guild(guild_id)
             if guild:
-                await refresh_inactive_message(guild)
+                await refresh_fn(guild)
         except Exception as e:
             print(f"WARNING: inactive_expire_loop refresh {guild_id}: {e}")
+
+
+@tasks.loop(hours=1)
+async def inactive_expire_loop():
+    """Каждый час проверяет списки инактива (обычный и Mirror) и удаляет тех, чья дата возвращения наступила (МСК)."""
+    await _expire_inactive_dict(inactive_list, refresh_inactive_message)
+    await _expire_inactive_dict(inactive_list_mirror, refresh_inactive_message_mirror)
 
 
 @inactive_expire_loop.error
