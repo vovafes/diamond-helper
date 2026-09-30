@@ -171,6 +171,15 @@ vzh_roles: dict = {}
 # ⛏ ВТОРАЯ РОЛЬ ВЗХ { guild_id: role_id }
 vzh_roles2: dict = {}
 
+# 🔫 ТРЕТЬЯ РОЛЬ ВЗП { guild_id: role_id }
+vzp_roles3: dict = {}
+
+# ⛏ ТРЕТЬЯ РОЛЬ ВЗХ { guild_id: role_id }
+vzh_roles3: dict = {}
+
+# 🎯 ТРЕТЬЯ РОЛЬ LIST/РЕАКИ { guild_id: role_id }
+list_roles3: dict = {}
+
 # 📅 РАСПИСАНИЕ ВЗХ ПО ФРАКЦИЯМ { guild_id: "banda" | "mafia" }
 # Банды: Пн+Ср+Пт+Вс, Мафии: Вт+Чт+Сб+Вс — используется, чтобы !vzh 20:00
 # правильно определял дату сбора, даже если создаётся за несколько дней до самого ВЗХ.
@@ -1036,6 +1045,9 @@ def save_data():
         "vzh_roles2":           {str(g): v for g, v in vzh_roles2.items()},
         "vzh_schedule_settings": {str(g): v for g, v in vzh_schedule_settings.items()},
         "list_roles2":          {str(g): v for g, v in list_roles2.items()},
+        "vzp_roles3":           {str(g): v for g, v in vzp_roles3.items()},
+        "vzh_roles3":           {str(g): v for g, v in vzh_roles3.items()},
+        "list_roles3":          {str(g): v for g, v in list_roles3.items()},
         "warn_roles":           {str(g): {str(k): v for k, v in wr.items()} for g, wr in warn_roles.items()},
         "admin_roles":          {str(g): v for g, v in admin_roles.items()},
         "extra_admin_roles":    {str(g): v for g, v in extra_admin_roles.items()},
@@ -1183,6 +1195,12 @@ def load_data():
             vzh_schedule_settings[int(g)] = v
         for g, v in data.get("list_roles2", {}).items():
             list_roles2[int(g)] = v
+        for g, v in data.get("vzp_roles3", {}).items():
+            vzp_roles3[int(g)] = v
+        for g, v in data.get("vzh_roles3", {}).items():
+            vzh_roles3[int(g)] = v
+        for g, v in data.get("list_roles3", {}).items():
+            list_roles3[int(g)] = v
         for g, wr in data.get("warn_roles", {}).items():
             warn_roles[int(g)] = {int(k): v for k, v in wr.items()}
         for g, v in data.get("admin_roles", {}).items():
@@ -2808,6 +2826,7 @@ async def взп_cmd(ctx, количество: int = 10, *, название: s
         vzp_roles.get(ctx.guild.id),
         mp_roles.get(ctx.guild.id),
         vzp_roles2.get(ctx.guild.id),
+        vzp_roles3.get(ctx.guild.id),
     ])
 
     event_time, название = _extract_event_time(название, "ВЗП")
@@ -2852,6 +2871,7 @@ async def взх_cmd(ctx, *, args: str = ""):
     content = _event_mentions(ctx.guild, [
         vzh_roles.get(ctx.guild.id),
         vzh_roles2.get(ctx.guild.id),
+        vzh_roles3.get(ctx.guild.id),
     ])
 
     hour, minute = map(int, event_time.split(":"))
@@ -2963,6 +2983,57 @@ async def set_event_role2(ctx, роль: discord.Role):
     await ctx.message.delete()
 
 
+@bot.command(name="роль_взп3")
+async def set_vzp_role3(ctx, роль: discord.Role):
+    """!роль_взп3 @роль — третья роль для тега в !vzp"""
+    if not is_admin_ctx(ctx):
+        return await ctx.message.delete()
+    vzp_roles3[ctx.guild.id] = роль.id
+    save_data()
+    embed = discord.Embed(
+        title="✅ Третья роль ВЗП настроена",
+        description=f"В `!vzp` дополнительно будет тегаться {роль.mention}",
+        color=discord.Color.green(),
+    )
+    embed.set_footer(text="DIAMOND", icon_url=_footer(ctx.guild.id))
+    await ctx.send(embed=embed, delete_after=10)
+    await ctx.message.delete()
+
+
+@bot.command(name="роль_взх3")
+async def set_vzh_role3(ctx, роль: discord.Role):
+    """!роль_взх3 @роль — третья роль для тега в !vzh"""
+    if not is_admin_ctx(ctx):
+        return await ctx.message.delete()
+    vzh_roles3[ctx.guild.id] = роль.id
+    save_data()
+    embed = discord.Embed(
+        title="✅ Третья роль ВЗХ настроена",
+        description=f"В `!vzh` дополнительно будет тегаться {роль.mention}",
+        color=discord.Color.green(),
+    )
+    embed.set_footer(text="DIAMOND", icon_url=_footer(ctx.guild.id))
+    await ctx.send(embed=embed, delete_after=10)
+    await ctx.message.delete()
+
+
+@bot.command(name="роль_реаки3")
+async def set_event_role3(ctx, роль: discord.Role):
+    """!роль_реаки3 @роль — третья роль для тега в !list"""
+    if not is_admin_ctx(ctx):
+        return await ctx.message.delete()
+    list_roles3[ctx.guild.id] = роль.id
+    save_data()
+    embed = discord.Embed(
+        title="✅ Третья роль list настроена",
+        description=f"В `!list` дополнительно будет тегаться {роль.mention}",
+        color=discord.Color.green(),
+    )
+    embed.set_footer(text="DIAMOND", icon_url=_footer(ctx.guild.id))
+    await ctx.send(embed=embed, delete_after=10)
+    await ctx.message.delete()
+
+
 @tree.command(name="доступ_сбора", description="Добавить роль с доступом к команде сбора")
 @app_commands.describe(
     тип="Тип сбора: взп, мп или реаки",
@@ -3029,6 +3100,7 @@ async def реаки_cmd(ctx, количество: int = 10, *, названи�
     content = _event_mentions(ctx.guild, [
         event_roles.get(ctx.guild.id),
         list_roles2.get(ctx.guild.id),
+        list_roles3.get(ctx.guild.id),
     ])
 
     event_time, название = _extract_event_time(название, "Реакции")
@@ -3089,6 +3161,7 @@ async def slash_vzp(interaction: discord.Interaction, количество: int 
         vzp_roles.get(interaction.guild_id),
         mp_roles.get(interaction.guild_id),
         vzp_roles2.get(interaction.guild_id),
+        vzp_roles3.get(interaction.guild_id),
     ])
     await _create_event_message(interaction.channel, interaction.guild, название, количество, content=content, event_time=время, cmd="vzp")
     await interaction.followup.send("✅ Сбор ВЗП создан!", ephemeral=True)
@@ -3107,6 +3180,7 @@ async def slash_reaki(interaction: discord.Interaction, количество: in
     content = _event_mentions(interaction.guild, [
         event_roles.get(interaction.guild_id),
         list_roles2.get(interaction.guild_id),
+        list_roles3.get(interaction.guild_id),
     ])
     await _create_event_message(interaction.channel, interaction.guild, название, количество, content=content, event_time=время, cmd="list")
     await interaction.followup.send("✅ Сбор реакций создан!", ephemeral=True)
@@ -4189,6 +4263,14 @@ def build_cfg_category_embed(guild: discord.Guild, category: str) -> discord.Emb
             f"**Реаки2:** {_rs(guild, list_roles2.get(gid))}\n\n"
             f"*Тегаются дополнительно вместе с основными ролями.*"
         )
+    elif category == "roles3":
+        e.title = "➕ Третьи роли тега"
+        e.description = (
+            f"**ВЗП3:** {_rs(guild, vzp_roles3.get(gid))}\n"
+            f"**ВЗХ3:** {_rs(guild, vzh_roles3.get(gid))}\n"
+            f"**Реаки3:** {_rs(guild, list_roles3.get(gid))}\n\n"
+            f"*Тегаются дополнительно вместе с основными и доп. ролями.*"
+        )
     elif category == "warns":
         wr = warn_roles.get(gid, {})
         e.title = "⚠️ Варн-роли"
@@ -4646,6 +4728,28 @@ class _CfgRoles2View(ui.View):
         self.add_item(_CfgRolePicker(lambda gid, rid: vzp_roles2.__setitem__(gid, rid), "roles2", 1, "⚔️ ВЗП2 — доп. роль тега"))
         self.add_item(_CfgRolePicker(lambda gid, rid: vzh_roles2.__setitem__(gid, rid), "roles2", 2, "⛏ ВЗХ2 — доп. роль тега"))
         self.add_item(_CfgRolePicker(lambda gid, rid: list_roles2.__setitem__(gid, rid), "roles2", 3, "🎯 Реаки2 — доп. роль тега"))
+
+        btn_roles3 = _cfg_btn("➕ Третьи роли (тег 3) →", row=0)
+        async def _roles3(inter):
+            await inter.response.edit_message(
+                embed=build_cfg_category_embed(inter.guild, "roles3"),
+                view=_CfgRoles3View(),
+            )
+        btn_roles3.callback = _roles3
+        self.add_item(btn_roles3)
+
+
+class _CfgRoles3View(ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+        back = _cfg_btn("◀ Назад к доп. ролям", row=0)
+        async def _back(inter):
+            await inter.response.edit_message(embed=build_cfg_category_embed(inter.guild, "roles2"), view=_CfgRoles2View())
+        back.callback = _back
+        self.add_item(back)
+        self.add_item(_CfgRolePicker(lambda gid, rid: vzp_roles3.__setitem__(gid, rid), "roles3", 1, "⚔️ ВЗП3 — третья роль тега"))
+        self.add_item(_CfgRolePicker(lambda gid, rid: vzh_roles3.__setitem__(gid, rid), "roles3", 2, "⛏ ВЗХ3 — третья роль тега"))
+        self.add_item(_CfgRolePicker(lambda gid, rid: list_roles3.__setitem__(gid, rid), "roles3", 3, "🎯 Реаки3 — третья роль тега"))
 
 
 class _CfgWarnsView(ui.View):
