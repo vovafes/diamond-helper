@@ -81,19 +81,6 @@ inactive_panels: dict = {}
 # { guild_id: { user_id: { "reason": str, "return_date": str, "since": datetime } } }
 inactive_list: dict = {}
 
-# 🪞 MIRROR — второй, независимый набор АФК/инактива (для семьи на втором игровом сервере)
-# { guild_id: { "message_id": int, "channel_id": int } }
-afk_panels_mirror: dict = {}
-
-# { guild_id: { user_id: { "reason": str, "return_time": str, "since": datetime } } }
-afk_list_mirror: dict = {}
-
-# { guild_id: { "message_id": int, "channel_id": int } }
-inactive_panels_mirror: dict = {}
-
-# { guild_id: { user_id: { "reason": str, "return_date": str, "since": datetime } } }
-inactive_list_mirror: dict = {}
-
 # 💰 БАЛЛЫ И ШТРАФЫ
 # { guild_id: { user_id: int } }
 points_db: dict = {}
@@ -352,7 +339,7 @@ intents.message_content = True
 intents.members = True
 intents.reactions = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 tree = bot.tree
 
 
@@ -838,54 +825,6 @@ def build_afk_embed(guild_id: int) -> discord.Embed:
     return embed
 
 
-def build_inactive_embed_mirror(guild_id: int) -> discord.Embed:
-    entries = list(inactive_list_mirror.get(guild_id, {}).items())
-    count   = len(entries)
-
-    if entries:
-        lines = "\n\n".join(
-            f"**{i+1})** <@{uid}> Причина: {d['reason']}\nВернусь: `{d['return_date']}`"
-            for i, (uid, d) in enumerate(entries)
-        )
-    else:
-        lines = "*Список пуст — никто не в инактиве*"
-
-    embed = discord.Embed(
-        title="📅 Люди, находящиеся в инактиве (Mirror):",
-        description=f"• Всего в инактиве **{count}** {declension(count)}\n\n{lines}",
-        color=discord.Color.orange(),
-        timestamp=datetime.now(),
-    )
-    if _afk_img(guild_id):
-        embed.set_image(url=_afk_img(guild_id))
-    embed.set_footer(text="DIAMOND", icon_url=_footer(guild_id))
-    return embed
-
-
-def build_afk_embed_mirror(guild_id: int) -> discord.Embed:
-    entries = list(afk_list_mirror.get(guild_id, {}).items())
-    count   = len(entries)
-
-    if entries:
-        lines = "\n\n".join(
-            f"**{i+1})** <@{uid}> Причина: {d['reason']}\nВернусь в: `{d['return_time']}`"
-            for i, (uid, d) in enumerate(entries)
-        )
-    else:
-        lines = "*Список пуст — никто не в АФК*"
-
-    embed = discord.Embed(
-        title="⏳ Люди, находящиеся в АФК (Mirror):",
-        description=f"• Всего в АФК **{count}** {declension(count)}\n\n{lines}",
-        color=discord.Color.blurple(),
-        timestamp=datetime.now(),
-    )
-    if _afk_img(guild_id):
-        embed.set_image(url=_afk_img(guild_id))
-    embed.set_footer(text="DIAMOND", icon_url=_footer(guild_id))
-    return embed
-
-
 def get_points(guild_id: int, user_id: int) -> int:
     return points_db.get(guild_id, {}).get(user_id, 0)
 
@@ -1019,8 +958,6 @@ def save_data():
 
     afk_list_serial              = _serialize_user_dict(afk_list)
     inactive_list_serial         = _serialize_user_dict(inactive_list)
-    afk_list_mirror_serial       = _serialize_user_dict(afk_list_mirror)
-    inactive_list_mirror_serial  = _serialize_user_dict(inactive_list_mirror)
 
     event_lists_serial = {}
     for mid, ev in event_lists.items():
@@ -1061,10 +998,6 @@ def save_data():
         "afk_panels":           {str(g): v for g, v in afk_panels.items()},
         "inactive_list":        inactive_list_serial,
         "inactive_panels":      {str(g): v for g, v in inactive_panels.items()},
-        "afk_list_mirror":         afk_list_mirror_serial,
-        "afk_panels_mirror":       {str(g): v for g, v in afk_panels_mirror.items()},
-        "inactive_list_mirror":    inactive_list_mirror_serial,
-        "inactive_panels_mirror":  {str(g): v for g, v in inactive_panels_mirror.items()},
         "event_lists":          event_lists_serial,
         "shop_panels":          {str(g): v for g, v in shop_panels.items()},
         "shop_log_channels":    {str(g): v for g, v in shop_log_channels.items()},
@@ -1255,27 +1188,6 @@ def load_data():
         for g, v in data.get("inactive_panels", {}).items():
             inactive_panels[int(g)] = v
 
-        # АФК/инактив — Mirror
-        for g, users in data.get("afk_list_mirror", {}).items():
-            afk_list_mirror[int(g)] = {}
-            for u, info in users.items():
-                afk_list_mirror[int(g)][int(u)] = {
-                    k: (datetime.fromisoformat(v) if k == "since" and v else v)
-                    for k, v in info.items()
-                }
-        for g, v in data.get("afk_panels_mirror", {}).items():
-            afk_panels_mirror[int(g)] = v
-
-        for g, users in data.get("inactive_list_mirror", {}).items():
-            inactive_list_mirror[int(g)] = {}
-            for u, info in users.items():
-                inactive_list_mirror[int(g)][int(u)] = {
-                    k: (datetime.fromisoformat(v) if k == "since" and v else v)
-                    for k, v in info.items()
-                }
-        for g, v in data.get("inactive_panels_mirror", {}).items():
-            inactive_panels_mirror[int(g)] = v
-
         # Сборы
         for mid, ev in data.get("event_lists", {}).items():
             event_lists[int(mid)] = {
@@ -1383,30 +1295,6 @@ async def refresh_inactive_message(guild: discord.Guild):
         channel = guild.get_channel(panel["channel_id"])
         msg     = await channel.fetch_message(panel["message_id"])
         await msg.edit(embed=build_inactive_embed(guild.id))
-    except Exception:
-        pass
-
-
-async def refresh_afk_message_mirror(guild: discord.Guild):
-    panel = afk_panels_mirror.get(guild.id)
-    if not panel:
-        return
-    try:
-        channel = guild.get_channel(panel["channel_id"])
-        msg     = await channel.fetch_message(panel["message_id"])
-        await msg.edit(embed=build_afk_embed_mirror(guild.id))
-    except Exception:
-        pass
-
-
-async def refresh_inactive_message_mirror(guild: discord.Guild):
-    panel = inactive_panels_mirror.get(guild.id)
-    if not panel:
-        return
-    try:
-        channel = guild.get_channel(panel["channel_id"])
-        msg     = await channel.fetch_message(panel["message_id"])
-        await msg.edit(embed=build_inactive_embed_mirror(guild.id))
     except Exception:
         pass
 
@@ -2027,148 +1915,6 @@ class InactiveView(ui.View):
         del inactive_list[guild_id][user_id]
         save_data()
         await refresh_inactive_message(interaction.guild)
-        await interaction.followup.send("✅ Вы убраны из инактива. С возвращением!", ephemeral=True)
-
-
-# ─── MIRROR — второй, независимый набор АФК/инактива ───
-class AfkModalMirror(ui.Modal, title="🕐 Уход в АФК (Mirror)"):
-    reason      = ui.TextInput(label="Причина", placeholder="На работе / Учёба / Дела...", required=True)
-    return_time = ui.TextInput(label="Вернусь в (например 18:30)", placeholder="18:30", required=True)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        guild_id = interaction.guild_id
-        user_id  = interaction.user.id
-
-        raw = str(self.return_time).strip()
-        import re as _re
-        m = _re.match(r"^([01]?\d|2[0-3]):([0-5]\d)$", raw)
-        if not m:
-            return await interaction.response.send_message(
-                "⚠️ Неверный формат времени. Используй формат **ЧЧ:ММ**, например `18:30`",
-                ephemeral=True,
-            )
-        raw = f"{int(m.group(1)):02d}:{m.group(2)}"
-
-        if guild_id not in afk_list_mirror:
-            afk_list_mirror[guild_id] = {}
-
-        afk_list_mirror[guild_id][user_id] = {
-            "reason":      str(self.reason),
-            "return_time": raw,
-            "since":       now_msk(),
-        }
-        save_data()
-
-        await refresh_afk_message_mirror(interaction.guild)
-
-        embed = discord.Embed(
-            description=(
-                f"🕐 Вы добавлены в АФК-список (Mirror)\n"
-                f"**Причина:** {self.reason}\n"
-                f"**Вернусь в:** `{raw}`"
-            ),
-            color=discord.Color.blurple(),
-        )
-        embed.set_footer(text="DIAMOND", icon_url=_footer(interaction.guild_id))
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-class AfkViewMirror(ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @ui.button(label="Отошел АФК", style=discord.ButtonStyle.secondary, emoji="🕐", custom_id="afk_away_mirror")
-    async def afk_away(self, interaction: discord.Interaction, button: ui.Button):
-        guild_id = interaction.guild_id
-        if guild_id in afk_list_mirror and interaction.user.id in afk_list_mirror[guild_id]:
-            return await interaction.response.send_message("⚠️ Вы уже в АФК-списке!", ephemeral=True)
-        await interaction.response.send_modal(AfkModalMirror())
-
-    @ui.button(label="Вернулся из АФК", style=discord.ButtonStyle.success, emoji="✅", custom_id="afk_back_mirror")
-    async def afk_back(self, interaction: discord.Interaction, button: ui.Button):
-        guild_id = interaction.guild_id
-        user_id  = interaction.user.id
-        if guild_id not in afk_list_mirror or user_id not in afk_list_mirror[guild_id]:
-            return await interaction.response.send_message("⚠️ Вас нет в АФК-списке!", ephemeral=True)
-
-        await interaction.response.defer(ephemeral=True)
-        del afk_list_mirror[guild_id][user_id]
-        save_data()
-        await refresh_afk_message_mirror(interaction.guild)
-        await interaction.followup.send("✅ Вы убраны из АФК-списка. С возвращением!", ephemeral=True)
-
-
-class InactiveModalMirror(ui.Modal, title="📅 Уход в инактив (Mirror)"):
-    reason      = ui.TextInput(label="Причина", placeholder="Отпуск / Работа / Дела...", required=True)
-    return_date = ui.TextInput(label="Вернусь (дата, например 25.04.2026)", placeholder="25.04.2026", required=True)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        guild_id = interaction.guild_id
-        user_id  = interaction.user.id
-
-        raw = str(self.return_date).strip()
-        import re as _re
-        m = _re.match(r"^(\d{2})\.(\d{2})\.(\d{4})$", raw)
-        if not m:
-            return await interaction.response.send_message(
-                "⚠️ Неверный формат даты. Используй формат **ДД.ММ.ГГГГ**, например `25.04.2026`",
-                ephemeral=True,
-            )
-        day, mon, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        if not (1 <= mon <= 12 and 1 <= day <= 31 and year >= 2020):
-            return await interaction.response.send_message(
-                "⚠️ Некорректная дата. Проверь, что день и месяц указаны правильно.",
-                ephemeral=True,
-            )
-
-        await interaction.response.defer(ephemeral=True)
-
-        if guild_id not in inactive_list_mirror:
-            inactive_list_mirror[guild_id] = {}
-
-        inactive_list_mirror[guild_id][user_id] = {
-            "reason":      str(self.reason),
-            "return_date": raw,
-            "since":       now_msk(),
-        }
-        save_data()
-
-        await refresh_inactive_message_mirror(interaction.guild)
-
-        embed = discord.Embed(
-            description=(
-                f"📅 Вы добавлены в список инактива (Mirror)\n"
-                f"**Причина:** {self.reason}\n"
-                f"**Вернусь:** `{raw}`"
-            ),
-            color=discord.Color.orange(),
-        )
-        embed.set_footer(text="DIAMOND", icon_url=_footer(interaction.guild_id))
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
-
-class InactiveViewMirror(ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @ui.button(label="Ухожу в инактив", style=discord.ButtonStyle.secondary, emoji="📅", custom_id="inactive_away_mirror")
-    async def inactive_away(self, interaction: discord.Interaction, button: ui.Button):
-        guild_id = interaction.guild_id
-        if guild_id in inactive_list_mirror and interaction.user.id in inactive_list_mirror[guild_id]:
-            return await interaction.response.send_message("⚠️ Вы уже в списке инактива!", ephemeral=True)
-        await interaction.response.send_modal(InactiveModalMirror())
-
-    @ui.button(label="Вернулся из инактива", style=discord.ButtonStyle.success, emoji="✅", custom_id="inactive_back_mirror")
-    async def inactive_back(self, interaction: discord.Interaction, button: ui.Button):
-        guild_id = interaction.guild_id
-        user_id  = interaction.user.id
-        if guild_id not in inactive_list_mirror or user_id not in inactive_list_mirror[guild_id]:
-            return await interaction.response.send_message("⚠️ Вас нет в списке инактива!", ephemeral=True)
-
-        await interaction.response.defer(ephemeral=True)
-        del inactive_list_mirror[guild_id][user_id]
-        save_data()
-        await refresh_inactive_message_mirror(interaction.guild)
         await interaction.followup.send("✅ Вы убраны из инактива. С возвращением!", ephemeral=True)
 
 
@@ -2916,17 +2662,22 @@ async def set_mp_role(ctx, роль: discord.Role):
 
 
 @bot.command(name="роль_взп2")
-async def set_vzp_role2(ctx, роль: discord.Role):
-    """!роль_взп2 @роль — дополнительная роль для тега в !vzp"""
+async def set_vzp_role2(ctx, роль: discord.Role = None):
+    """!роль_взп2 [@роль] — доп. роль для тега в !vzp; без роли — сбросить настройку"""
     if not is_admin_ctx(ctx):
         return await ctx.message.delete()
-    vzp_roles2[ctx.guild.id] = роль.id
-    save_data()
-    embed = discord.Embed(
-        title="✅ Доп. роль ВЗП настроена",
-        description=f"В `!vzp` дополнительно будет тегаться {роль.mention}",
-        color=discord.Color.green(),
-    )
+    if роль is None:
+        vzp_roles2.pop(ctx.guild.id, None)
+        save_data()
+        embed = discord.Embed(title="✅ Доп. роль ВЗП сброшена", description="В `!vzp` больше не будет тегаться доп. роль.", color=discord.Color.orange())
+    else:
+        vzp_roles2[ctx.guild.id] = роль.id
+        save_data()
+        embed = discord.Embed(
+            title="✅ Доп. роль ВЗП настроена",
+            description=f"В `!vzp` дополнительно будет тегаться {роль.mention}",
+            color=discord.Color.green(),
+        )
     embed.set_footer(text="DIAMOND", icon_url=_footer(ctx.guild.id))
     await ctx.send(embed=embed, delete_after=10)
     await ctx.message.delete()
@@ -2950,85 +2701,110 @@ async def set_vzh_role(ctx, роль: discord.Role):
 
 
 @bot.command(name="роль_взх2")
-async def set_vzh_role2(ctx, роль: discord.Role):
-    """!роль_взх2 @роль — дополнительная роль для тега в !vzh"""
+async def set_vzh_role2(ctx, роль: discord.Role = None):
+    """!роль_взх2 [@роль] — доп. роль для тега в !vzh; без роли — сбросить настройку"""
     if not is_admin_ctx(ctx):
         return await ctx.message.delete()
-    vzh_roles2[ctx.guild.id] = роль.id
-    save_data()
-    embed = discord.Embed(
-        title="✅ Доп. роль ВЗХ настроена",
-        description=f"В `!vzh` дополнительно будет тегаться {роль.mention}",
-        color=discord.Color.green(),
-    )
+    if роль is None:
+        vzh_roles2.pop(ctx.guild.id, None)
+        save_data()
+        embed = discord.Embed(title="✅ Доп. роль ВЗХ сброшена", description="В `!vzh` больше не будет тегаться доп. роль.", color=discord.Color.orange())
+    else:
+        vzh_roles2[ctx.guild.id] = роль.id
+        save_data()
+        embed = discord.Embed(
+            title="✅ Доп. роль ВЗХ настроена",
+            description=f"В `!vzh` дополнительно будет тегаться {роль.mention}",
+            color=discord.Color.green(),
+        )
     embed.set_footer(text="DIAMOND", icon_url=_footer(ctx.guild.id))
     await ctx.send(embed=embed, delete_after=10)
     await ctx.message.delete()
 
 
 @bot.command(name="роль_реаки2")
-async def set_event_role2(ctx, роль: discord.Role):
-    """!роль_реаки2 @роль — дополнительная роль для тега в !list"""
+async def set_event_role2(ctx, роль: discord.Role = None):
+    """!роль_реаки2 [@роль] — доп. роль для тега в !list; без роли — сбросить настройку"""
     if not is_admin_ctx(ctx):
         return await ctx.message.delete()
-    list_roles2[ctx.guild.id] = роль.id
-    save_data()
-    embed = discord.Embed(
-        title="✅ Доп. роль list настроена",
-        description=f"В `!list` дополнительно будет тегаться {роль.mention}",
-        color=discord.Color.green(),
-    )
+    if роль is None:
+        list_roles2.pop(ctx.guild.id, None)
+        save_data()
+        embed = discord.Embed(title="✅ Доп. роль list сброшена", description="В `!list` больше не будет тегаться доп. роль.", color=discord.Color.orange())
+    else:
+        list_roles2[ctx.guild.id] = роль.id
+        save_data()
+        embed = discord.Embed(
+            title="✅ Доп. роль list настроена",
+            description=f"В `!list` дополнительно будет тегаться {роль.mention}",
+            color=discord.Color.green(),
+        )
     embed.set_footer(text="DIAMOND", icon_url=_footer(ctx.guild.id))
     await ctx.send(embed=embed, delete_after=10)
     await ctx.message.delete()
 
 
 @bot.command(name="роль_взп3")
-async def set_vzp_role3(ctx, роль: discord.Role):
-    """!роль_взп3 @роль — третья роль для тега в !vzp"""
+async def set_vzp_role3(ctx, роль: discord.Role = None):
+    """!роль_взп3 [@роль] — третья роль для тега в !vzp; без роли — сбросить настройку"""
     if not is_admin_ctx(ctx):
         return await ctx.message.delete()
-    vzp_roles3[ctx.guild.id] = роль.id
-    save_data()
-    embed = discord.Embed(
-        title="✅ Третья роль ВЗП настроена",
-        description=f"В `!vzp` дополнительно будет тегаться {роль.mention}",
-        color=discord.Color.green(),
-    )
+    if роль is None:
+        vzp_roles3.pop(ctx.guild.id, None)
+        save_data()
+        embed = discord.Embed(title="✅ Третья роль ВЗП сброшена", description="В `!vzp` больше не будет тегаться третья роль.", color=discord.Color.orange())
+    else:
+        vzp_roles3[ctx.guild.id] = роль.id
+        save_data()
+        embed = discord.Embed(
+            title="✅ Третья роль ВЗП настроена",
+            description=f"В `!vzp` дополнительно будет тегаться {роль.mention}",
+            color=discord.Color.green(),
+        )
     embed.set_footer(text="DIAMOND", icon_url=_footer(ctx.guild.id))
     await ctx.send(embed=embed, delete_after=10)
     await ctx.message.delete()
 
 
 @bot.command(name="роль_взх3")
-async def set_vzh_role3(ctx, роль: discord.Role):
-    """!роль_взх3 @роль — третья роль для тега в !vzh"""
+async def set_vzh_role3(ctx, роль: discord.Role = None):
+    """!роль_взх3 [@роль] — третья роль для тега в !vzh; без роли — сбросить настройку"""
     if not is_admin_ctx(ctx):
         return await ctx.message.delete()
-    vzh_roles3[ctx.guild.id] = роль.id
-    save_data()
-    embed = discord.Embed(
-        title="✅ Третья роль ВЗХ настроена",
-        description=f"В `!vzh` дополнительно будет тегаться {роль.mention}",
-        color=discord.Color.green(),
-    )
+    if роль is None:
+        vzh_roles3.pop(ctx.guild.id, None)
+        save_data()
+        embed = discord.Embed(title="✅ Третья роль ВЗХ сброшена", description="В `!vzh` больше не будет тегаться третья роль.", color=discord.Color.orange())
+    else:
+        vzh_roles3[ctx.guild.id] = роль.id
+        save_data()
+        embed = discord.Embed(
+            title="✅ Третья роль ВЗХ настроена",
+            description=f"В `!vzh` дополнительно будет тегаться {роль.mention}",
+            color=discord.Color.green(),
+        )
     embed.set_footer(text="DIAMOND", icon_url=_footer(ctx.guild.id))
     await ctx.send(embed=embed, delete_after=10)
     await ctx.message.delete()
 
 
 @bot.command(name="роль_реаки3")
-async def set_event_role3(ctx, роль: discord.Role):
-    """!роль_реаки3 @роль — третья роль для тега в !list"""
+async def set_event_role3(ctx, роль: discord.Role = None):
+    """!роль_реаки3 [@роль] — третья роль для тега в !list; без роли — сбросить настройку"""
     if not is_admin_ctx(ctx):
         return await ctx.message.delete()
-    list_roles3[ctx.guild.id] = роль.id
-    save_data()
-    embed = discord.Embed(
-        title="✅ Третья роль list настроена",
-        description=f"В `!list` дополнительно будет тегаться {роль.mention}",
-        color=discord.Color.green(),
-    )
+    if роль is None:
+        list_roles3.pop(ctx.guild.id, None)
+        save_data()
+        embed = discord.Embed(title="✅ Третья роль list сброшена", description="В `!list` больше не будет тегаться третья роль.", color=discord.Color.orange())
+    else:
+        list_roles3[ctx.guild.id] = роль.id
+        save_data()
+        embed = discord.Embed(
+            title="✅ Третья роль list настроена",
+            description=f"В `!list` дополнительно будет тегаться {роль.mention}",
+            color=discord.Color.green(),
+        )
     embed.set_footer(text="DIAMOND", icon_url=_footer(ctx.guild.id))
     await ctx.send(embed=embed, delete_after=10)
     await ctx.message.delete()
@@ -3147,7 +2923,7 @@ async def spisok_cmd(ctx):
 # СЛЭШ-КОМАНДЫ СБОРОВ (/vzp, /reaki)
 # ─────────────────────────────────────────────
 
-@tree.command(name="vzp", description="Создать сбор ВЗП (тегает роли ВЗП + МП)")
+@tree.command(name="vzp", description="Создать сбор ВЗП (тегает роли ВЗП, МП и доп. роли)")
 @app_commands.describe(
     количество="Количество слотов (по умолчанию 10)",
     название="Название сбора (по умолчанию ВЗП)",
@@ -3167,7 +2943,7 @@ async def slash_vzp(interaction: discord.Interaction, количество: int 
     await interaction.followup.send("✅ Сбор ВЗП создан!", ephemeral=True)
 
 
-@tree.command(name="reaki", description="Создать сбор реакций (тегает роль реаки)")
+@tree.command(name="reaki", description="Создать сбор реакций (тегает роль реаки и доп. роли)")
 @app_commands.describe(
     количество="Количество слотов (по умолчанию 10)",
     название="Название сбора (по умолчанию Реакции)",
@@ -3280,93 +3056,6 @@ async def slash_inactive_clear(interaction: discord.Interaction):
     inactive_list[guild_id] = {}
     save_data()
     await refresh_inactive_message(interaction.guild)
-    await interaction.response.send_message(f"✅ Список инактива очищен ({count} {declension(count)} убрано).", ephemeral=True)
-
-
-# ─── MIRROR — второй, независимый набор АФК/инактива ───
-@bot.command(name="афк_mirror")
-async def create_afk_mirror(ctx):
-    if not is_admin_ctx(ctx):
-        return await ctx.message.delete()
-    """!афк_mirror — создать панель АФК (Mirror) в этом канале"""
-    guild_id = ctx.guild.id
-    if guild_id not in afk_list_mirror:
-        afk_list_mirror[guild_id] = {}
-
-    view  = AfkViewMirror()
-    embed = build_afk_embed_mirror(guild_id)
-    msg   = await ctx.send(embed=embed, view=view)
-    afk_panels_mirror[guild_id] = {"message_id": msg.id, "channel_id": ctx.channel.id}
-    save_data()
-    await ctx.message.delete()
-
-
-@bot.command(name="инактив_mirror")
-async def create_inactive_mirror(ctx):
-    if not is_admin_ctx(ctx):
-        return await ctx.message.delete()
-    """!инактив_mirror — создать панель инактива (Mirror) в этом канале"""
-    guild_id = ctx.guild.id
-    if guild_id not in inactive_list_mirror:
-        inactive_list_mirror[guild_id] = {}
-
-    view  = InactiveViewMirror()
-    embed = build_inactive_embed_mirror(guild_id)
-    msg   = await ctx.send(embed=embed, view=view)
-    inactive_panels_mirror[guild_id] = {"message_id": msg.id, "channel_id": ctx.channel.id}
-    save_data()
-    await ctx.message.delete()
-
-
-@tree.command(name="афк_снять_mirror", description="Убрать пользователя из АФК-списка Mirror (админ)")
-@app_commands.describe(пользователь="Кого убрать из списка АФК (Mirror)")
-async def slash_afk_remove_mirror(interaction: discord.Interaction, пользователь: discord.Member):
-    if not is_admin(interaction):
-        return await interaction.response.send_message("❌ Недостаточно прав!", ephemeral=True)
-    guild_id = interaction.guild_id
-    if guild_id not in afk_list_mirror or пользователь.id not in afk_list_mirror[guild_id]:
-        return await interaction.response.send_message(f"⚠️ {пользователь.mention} не в АФК-списке.", ephemeral=True)
-    del afk_list_mirror[guild_id][пользователь.id]
-    save_data()
-    await refresh_afk_message_mirror(interaction.guild)
-    await interaction.response.send_message(f"✅ {пользователь.mention} убран(а) из АФК-списка.", ephemeral=True)
-
-
-@tree.command(name="афк_очистить_mirror", description="Очистить весь АФК-список Mirror (админ)")
-async def slash_afk_clear_mirror(interaction: discord.Interaction):
-    if not is_admin(interaction):
-        return await interaction.response.send_message("❌ Недостаточно прав!", ephemeral=True)
-    guild_id = interaction.guild_id
-    count = len(afk_list_mirror.get(guild_id, {}))
-    afk_list_mirror[guild_id] = {}
-    save_data()
-    await refresh_afk_message_mirror(interaction.guild)
-    await interaction.response.send_message(f"✅ АФК-список очищен ({count} {declension(count)} убрано).", ephemeral=True)
-
-
-@tree.command(name="инактив_снять_mirror", description="Убрать пользователя из списка инактива Mirror (админ)")
-@app_commands.describe(пользователь="Кого убрать из списка инактива (Mirror)")
-async def slash_inactive_remove_mirror(interaction: discord.Interaction, пользователь: discord.Member):
-    if not is_admin(interaction):
-        return await interaction.response.send_message("❌ Недостаточно прав!", ephemeral=True)
-    guild_id = interaction.guild_id
-    if guild_id not in inactive_list_mirror or пользователь.id not in inactive_list_mirror[guild_id]:
-        return await interaction.response.send_message(f"⚠️ {пользователь.mention} не в списке инактива.", ephemeral=True)
-    del inactive_list_mirror[guild_id][пользователь.id]
-    save_data()
-    await refresh_inactive_message_mirror(interaction.guild)
-    await interaction.response.send_message(f"✅ {пользователь.mention} убран(а) из инактива.", ephemeral=True)
-
-
-@tree.command(name="инактив_очистить_mirror", description="Очистить весь список инактива Mirror (админ)")
-async def slash_inactive_clear_mirror(interaction: discord.Interaction):
-    if not is_admin(interaction):
-        return await interaction.response.send_message("❌ Недостаточно прав!", ephemeral=True)
-    guild_id = interaction.guild_id
-    count = len(inactive_list_mirror.get(guild_id, {}))
-    inactive_list_mirror[guild_id] = {}
-    save_data()
-    await refresh_inactive_message_mirror(interaction.guild)
     await interaction.response.send_message(f"✅ Список инактива очищен ({count} {declension(count)} убрано).", ephemeral=True)
 
 
@@ -3782,6 +3471,47 @@ async def remove_points_cmd(ctx, пользователь: discord.Member, ко�
     await ctx.send(embed=embed)
 
 
+class ResetPointsConfirmView(ui.View):
+    def __init__(self, guild_id: int, author_id: int):
+        super().__init__(timeout=30)
+        self._guild_id  = guild_id
+        self._author_id = author_id
+
+    @ui.button(label="Да, обнулить всем", style=discord.ButtonStyle.danger, emoji="⚠️")
+    async def confirm(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self._author_id:
+            return await interaction.response.send_message("❌ Эта кнопка не для тебя.", ephemeral=True)
+        count = len(points_db.get(self._guild_id, {}))
+        points_db[self._guild_id] = {}
+        save_points()
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(
+            content=f"✅ Баллы обнулены у **{count}** {declension(count)}.",
+            embed=None, view=self,
+        )
+
+    @ui.button(label="Отмена", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self._author_id:
+            return await interaction.response.send_message("❌ Эта кнопка не для тебя.", ephemeral=True)
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="❌ Отменено.", embed=None, view=self)
+
+
+@bot.command(name="обнулить_баллы")
+async def reset_all_points_cmd(ctx):
+    """!обнулить_баллы — сбросить баллы (алмазы) у всех на этом сервере в 0 (требует подтверждения)"""
+    if not is_admin_ctx(ctx):
+        return await ctx.message.delete()
+    count = len(points_db.get(ctx.guild.id, {}))
+    await ctx.send(
+        f"⚠️ Точно обнулить баллы **{count}** {declension(count)}? Это действие необратимо.",
+        view=ResetPointsConfirmView(ctx.guild.id, ctx.author.id),
+    )
+
+
 @bot.command(name="warn")
 async def warn_user(ctx, пользователь: discord.Member, количество: int, *, причина: str):
     if not is_admin_ctx(ctx):
@@ -3866,6 +3596,27 @@ async def admin_remove_warn(ctx, пользователь: discord.Member):
         pass
 
 
+@bot.command(name="clear", aliases=["очистить", "purge"])
+async def clear_messages_cmd(ctx, количество: int, пользователь: discord.Member = None):
+    """!clear <количество> [@пользователь] — удалить последние N сообщений в канале (опционально только от пользователя)"""
+    if not is_admin_ctx(ctx):
+        return await ctx.message.delete()
+    if количество < 1 or количество > 100:
+        return await ctx.send("❌ Укажи число от 1 до 100.", delete_after=6)
+
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    def _check(m):
+        return пользователь is None or m.author.id == пользователь.id
+
+    deleted = await ctx.channel.purge(limit=количество, check=_check)
+    notice = await ctx.send(f"🧹 Удалено сообщений: **{len(deleted)}**")
+    await notice.delete(delay=5)
+
+
 @bot.command(name="роль_варн")
 async def set_warn_role(ctx, номер: int, роль: discord.Role):
     if not is_admin_ctx(ctx):
@@ -3892,28 +3643,85 @@ async def warnlist(ctx):
     if not is_admin_ctx(ctx):
         return await ctx.message.delete()
     """!warnlist — список всех участников с варнами"""
-    guild_warns = warns_db.get(ctx.guild.id, {})
-    active = {uid: d for uid, d in guild_warns.items() if d.get("warns", 0) > 0}
-
-    if not active:
-        return await ctx.send("✅ Ни у кого нет варнов!", delete_after=6)
-
-    lines = []
-    for i, (uid, d) in enumerate(active.items(), 1):
-        lines.append(
-            f"**{i}.** <@{uid}> — **{d['warns']}/3** варн(а)\n"
-            f"└ Причина: {d['reason']} | Модератор: <@{d['moderator']}>"
-        )
-
-    embed = discord.Embed(
-        title="⚠️ Список участников с варнами",
-        description="\n\n".join(lines),
-        color=discord.Color.red(),
-        timestamp=datetime.now(),
-    )
-    embed.set_footer(text=f"DIAMOND • Всего: {len(active)}", icon_url=_footer(ctx.guild.id))
-    await ctx.send(embed=embed)
+    await ctx.send(embed=_build_warnlist_embed(ctx.guild))
     await ctx.message.delete()
+
+
+# ─────────────────────────────────────────────
+# HELP — список всех команд (авто-собирается из зарегистрированных команд)
+# ─────────────────────────────────────────────
+
+HELP_PER_PAGE = 12
+
+
+def _all_help_entries() -> list[tuple[str, str]]:
+    entries = []
+    for cmd in sorted(bot.commands, key=lambda c: c.name):
+        if cmd.hidden or cmd.name in ("help",):
+            continue
+        sig  = f"!{cmd.name} {cmd.signature}".strip()
+        desc = (cmd.help or "").strip() or "—"
+        entries.append((sig, desc))
+    for cmd in sorted(tree.get_commands(), key=lambda c: c.name):
+        if not isinstance(cmd, app_commands.Command):
+            continue
+        entries.append((f"/{cmd.name}", cmd.description or "—"))
+    return entries
+
+
+def _build_help_embed(entries: list[tuple[str, str]], page: int, total_pages: int) -> discord.Embed:
+    embed = discord.Embed(
+        title="📖 Команды бота",
+        color=0x2b2d31,
+    )
+    start = (page - 1) * HELP_PER_PAGE
+    for sig, desc in entries[start:start + HELP_PER_PAGE]:
+        embed.add_field(name=sig, value=desc, inline=False)
+    embed.set_footer(text=f"DIAMOND • Страница {page}/{total_pages} • Всего команд: {len(entries)}")
+    return embed
+
+
+class HelpPaginationView(ui.View):
+    def __init__(self, entries: list[tuple[str, str]], page: int = 1):
+        super().__init__(timeout=180)
+        self._entries = entries
+        self._page    = page
+        total_pages   = max(1, -(-len(entries) // HELP_PER_PAGE))
+
+        prev_btn = ui.Button(label="◀", style=discord.ButtonStyle.secondary, disabled=(page <= 1))
+        async def _prev(inter):
+            await inter.response.edit_message(
+                embed=_build_help_embed(self._entries, self._page - 1, total_pages),
+                view=HelpPaginationView(self._entries, self._page - 1),
+            )
+        prev_btn.callback = _prev
+        self.add_item(prev_btn)
+
+        next_btn = ui.Button(label="▶", style=discord.ButtonStyle.secondary, disabled=(page >= total_pages))
+        async def _next(inter):
+            await inter.response.edit_message(
+                embed=_build_help_embed(self._entries, self._page + 1, total_pages),
+                view=HelpPaginationView(self._entries, self._page + 1),
+            )
+        next_btn.callback = _next
+        self.add_item(next_btn)
+
+
+@bot.command(name="help")
+async def help_cmd(ctx):
+    """!help — список всех команд бота (префикс и слэш)"""
+    entries     = _all_help_entries()
+    total_pages = max(1, -(-len(entries) // HELP_PER_PAGE))
+    await ctx.send(embed=_build_help_embed(entries, 1, total_pages), view=HelpPaginationView(entries, 1))
+
+
+@tree.command(name="help", description="Список всех команд бота")
+async def slash_help(interaction: discord.Interaction):
+    entries     = _all_help_entries()
+    total_pages = max(1, -(-len(entries) // HELP_PER_PAGE))
+    await interaction.response.send_message(
+        embed=_build_help_embed(entries, 1, total_pages), view=HelpPaginationView(entries, 1), ephemeral=True,
+    )
 
 
 @bot.command(name="замена")
@@ -4428,6 +4236,14 @@ CFG_CATEGORY_PAGES = [
 ]
 
 
+def _cfg_page_for_cat(cat: str) -> int:
+    """На какой странице CFG_CATEGORY_PAGES лежит категория — чтобы кнопка «Назад» возвращала на верную страницу."""
+    for i, options in enumerate(CFG_CATEGORY_PAGES, start=1):
+        if any(o.value == cat for o in options):
+            return i
+    return 1
+
+
 class CfgCategorySelect(ui.Select):
     def __init__(self, page: int = 1):
         options = CFG_CATEGORY_PAGES[page - 1]
@@ -4651,7 +4467,7 @@ class _CfgTicketsView(ui.View):
         super().__init__(timeout=300)
 
         back = _cfg_btn("◀ Назад", row=0)
-        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView())
+        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView(page=_cfg_page_for_cat("tickets")))
         back.callback = _back
         self.add_item(back)
 
@@ -4697,7 +4513,7 @@ class _CfgRolesView(ui.View):
     def __init__(self):
         super().__init__(timeout=300)
         back = _cfg_btn("◀ Назад", row=0)
-        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView())
+        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView(page=_cfg_page_for_cat("roles")))
         back.callback = _back
         self.add_item(back)
 
@@ -4715,6 +4531,19 @@ class _CfgRolesView(ui.View):
         self.add_item(_CfgRolePicker(lambda gid, rid: vzh_roles.__setitem__(gid, rid), "roles", 3, "⛏ ВЗХ — выбери роль"))
         self.add_item(_CfgRolePicker(lambda gid, rid: event_roles.__setitem__(gid, rid), "roles", 4, "🎯 Реаки — выбери роль"))
         # Роль магазина настраивается на странице «Доп. роли» (row-лимит: 4 селекта на страницу)
+
+
+def _cfg_clear_role_btn(label: str, clear_fn, cat_key: str, view_fn, row: int):
+    """Кнопка сброса роли в None (RoleSelect не умеет снимать выбор)."""
+    btn = _cfg_btn(f"✖ {label}", style=discord.ButtonStyle.danger, row=row)
+    async def _clear(inter):
+        clear_fn(inter.guild_id)
+        save_data()
+        await inter.response.send_message(f"✅ {label} сброшена.", ephemeral=True)
+        embed = build_cfg_category_embed(inter.guild, cat_key)
+        await inter.message.edit(embed=embed, view=view_fn())
+    btn.callback = _clear
+    return btn
 
 
 class _CfgRoles2View(ui.View):
@@ -4738,6 +4567,10 @@ class _CfgRoles2View(ui.View):
         btn_roles3.callback = _roles3
         self.add_item(btn_roles3)
 
+        self.add_item(_cfg_clear_role_btn("ВЗП2", lambda gid: vzp_roles2.pop(gid, None), "roles2", _CfgRoles2View, 4))
+        self.add_item(_cfg_clear_role_btn("ВЗХ2", lambda gid: vzh_roles2.pop(gid, None), "roles2", _CfgRoles2View, 4))
+        self.add_item(_cfg_clear_role_btn("Реаки2", lambda gid: list_roles2.pop(gid, None), "roles2", _CfgRoles2View, 4))
+
 
 class _CfgRoles3View(ui.View):
     def __init__(self):
@@ -4751,12 +4584,16 @@ class _CfgRoles3View(ui.View):
         self.add_item(_CfgRolePicker(lambda gid, rid: vzh_roles3.__setitem__(gid, rid), "roles3", 2, "⛏ ВЗХ3 — третья роль тега"))
         self.add_item(_CfgRolePicker(lambda gid, rid: list_roles3.__setitem__(gid, rid), "roles3", 3, "🎯 Реаки3 — третья роль тега"))
 
+        self.add_item(_cfg_clear_role_btn("ВЗП3", lambda gid: vzp_roles3.pop(gid, None), "roles3", _CfgRoles3View, 4))
+        self.add_item(_cfg_clear_role_btn("ВЗХ3", lambda gid: vzh_roles3.pop(gid, None), "roles3", _CfgRoles3View, 4))
+        self.add_item(_cfg_clear_role_btn("Реаки3", lambda gid: list_roles3.pop(gid, None), "roles3", _CfgRoles3View, 4))
+
 
 class _CfgWarnsView(ui.View):
     def __init__(self):
         super().__init__(timeout=300)
         back = _cfg_btn("◀ Назад", row=0)
-        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView())
+        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView(page=_cfg_page_for_cat("warns")))
         back.callback = _back
         self.add_item(back)
         self.add_item(_CfgRolePicker(lambda gid, rid: warn_roles.setdefault(gid, {}).__setitem__(1, rid), "warns", 1, "⚠️ Варн 1/3 — выбери роль"))
@@ -4770,7 +4607,7 @@ class _CfgLogsView(ui.View):
         gid = guild.id
 
         back = _cfg_btn("◀ Назад", row=0)
-        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView())
+        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView(page=_cfg_page_for_cat("logs")))
         back.callback = _back
         self.add_item(back)
 
@@ -4810,7 +4647,7 @@ class _CfgEventsView(ui.View):
     def __init__(self):
         super().__init__(timeout=300)
         back = _cfg_btn("◀ Назад", row=0)
-        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView())
+        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView(page=_cfg_page_for_cat("events")))
         back.callback = _back
         self.add_item(back)
 
@@ -4879,7 +4716,7 @@ class _CfgVoiceView(ui.View):
         vs  = voice_reward_settings.get(gid, {})
 
         back = _cfg_btn("◀ Назад", row=0)
-        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView())
+        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView(page=_cfg_page_for_cat("voice")))
         back.callback = _back
         self.add_item(back)
 
@@ -4901,7 +4738,7 @@ class _CfgPrivateView(ui.View):
     def __init__(self, guild: discord.Guild):
         super().__init__(timeout=300)
         back = _cfg_btn("◀ Назад", row=0)
-        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView())
+        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView(page=_cfg_page_for_cat("private")))
         back.callback = _back
         self.add_item(back)
 
@@ -4922,7 +4759,7 @@ class _CfgRosterView(ui.View):
     def __init__(self, guild: discord.Guild):
         super().__init__(timeout=300)
         back = _cfg_btn("◀ Назад", row=0)
-        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView())
+        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView(page=_cfg_page_for_cat("roster")))
         back.callback = _back
         self.add_item(back)
 
@@ -4944,7 +4781,7 @@ class _CfgContractsView(ui.View):
         cs  = contract_settings.get(gid) or {}
 
         back = _cfg_btn("◀ Назад", row=0)
-        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView())
+        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView(page=_cfg_page_for_cat("contracts")))
         back.callback = _back
         self.add_item(back)
 
@@ -4977,7 +4814,7 @@ class _CfgMiscView(ui.View):
     def __init__(self, guild: discord.Guild):
         super().__init__(timeout=300)
         back = _cfg_btn("◀ Назад", row=0)
-        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView())
+        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView(page=_cfg_page_for_cat("misc")))
         back.callback = _back
         self.add_item(back)
 
@@ -5009,7 +4846,7 @@ class _CfgContentView(ui.View):
         fs  = feedback_settings.get(gid) or {}
 
         back = _cfg_btn("◀ Назад", row=0)
-        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView())
+        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView(page=_cfg_page_for_cat("content")))
         back.callback = _back
         self.add_item(back)
 
@@ -5136,7 +4973,7 @@ class _CfgBackupView(ui.View):
         backup_settings.setdefault(gid, {"channel_id": None, "interval_hours": 1, "files": [], "last_backup": None})
 
         back = _cfg_btn("◀ Назад", row=0)
-        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView())
+        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView(page=_cfg_page_for_cat("backup")))
         back.callback = _back
         self.add_item(back)
 
@@ -5167,7 +5004,7 @@ class _CfgRecruitCabinetView(ui.View):
         rcp = recruit_cabinet_panels.get(gid, {})
 
         back = _cfg_btn("◀ Назад", row=0)
-        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView())
+        async def _back(inter): await inter.response.edit_message(embed=build_cfg_main_embed(inter.guild), view=CfgMainView(page=_cfg_page_for_cat("recruit_cabinet")))
         back.callback = _back
         self.add_item(back)
 
@@ -5685,8 +5522,6 @@ async def on_ready():
     load_chips()
     bot.add_view(AfkView())
     bot.add_view(InactiveView())
-    bot.add_view(AfkViewMirror())
-    bot.add_view(InactiveViewMirror())
     bot.add_view(PrivateVCView())
     bot.add_view(ApplicationReviewView())
     bot.add_view(PostCloseView())
@@ -6893,27 +6728,6 @@ class PersonalCabinetView(ui.View):
         embed.set_footer(text="DIAMOND", icon_url=_footer(interaction.guild_id))
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @ui.button(label="Варны", emoji="⚠️", style=discord.ButtonStyle.secondary, custom_id="cabinet_warns", row=0)
-    async def btn_warns(self, interaction: discord.Interaction, button: ui.Button):
-        warn_data = get_warns(interaction.guild_id, interaction.user.id)
-        if not warn_data:
-            embed = discord.Embed(
-                title="✅ Варны",
-                description="У тебя нет варнов.",
-                color=discord.Color.green(),
-                timestamp=datetime.now(),
-            )
-        else:
-            embed = discord.Embed(
-                title="⚠️ Варны",
-                color=discord.Color.orange(),
-                timestamp=datetime.now(),
-            )
-            embed.add_field(name="Количество", value=f"{warn_data['warns']}/3", inline=True)
-            embed.add_field(name="Причина", value=warn_data.get("reason", "—"), inline=True)
-        embed.set_footer(text="DIAMOND", icon_url=_footer(interaction.guild_id))
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
     @ui.button(label="Фидбек", emoji="💬", style=discord.ButtonStyle.danger, custom_id="cabinet_feedback", row=0)
     async def btn_feedback(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.send_modal(FeedbackModal())
@@ -7226,6 +7040,97 @@ class IssueWarnModal(ui.Modal, title="⚠️ Выдать варн — толь�
         await interaction.followup.send(f"✅ Варн {level}/3 выдан {member.mention}.", ephemeral=True)
 
 
+def _build_warnlist_embed(guild: discord.Guild) -> discord.Embed:
+    """Общий билдер эмбеда со списком всех варнов — используется в !warnlist и в кабинете рекрута."""
+    guild_warns = warns_db.get(guild.id, {})
+    active = {uid: d for uid, d in guild_warns.items() if d.get("warns", 0) > 0}
+
+    embed = discord.Embed(
+        title="⚠️ Список участников с варнами",
+        color=discord.Color.red(),
+        timestamp=datetime.now(),
+    )
+    embed.set_footer(text=f"DIAMOND • Всего: {len(active)}", icon_url=_footer(guild.id))
+
+    if not active:
+        embed.description = "✅ Ни у кого нет варнов!"
+        return embed
+
+    lines = []
+    for i, (uid, d) in enumerate(active.items(), 1):
+        lines.append(
+            f"**{i}.** <@{uid}> — **{d['warns']}/3** варн(а)\n"
+            f"└ Причина: {d['reason']} | Модератор: <@{d['moderator']}>"
+        )
+    embed.description = "\n\n".join(lines)
+    return embed
+
+
+def _find_remove_warn_shop_item(guild_id: int):
+    """Первый настроенный товар магазина с действием remove_warn (для самоснятия варна за баллы)."""
+    for item_id, item in guild_shop_items.get(guild_id, {}).items():
+        if item.get("action") == "remove_warn":
+            return item_id, item
+    return None, None
+
+
+class SelfRemoveWarnView(ui.View):
+    """Кнопка самостоятельного снятия варна за баллы (цена берётся из товара магазина remove_warn)."""
+    def __init__(self, author_id: int, price: int):
+        super().__init__(timeout=60)
+        self._author_id = author_id
+        self.children[0].label = f"🗑 Снять варн за {price} 💎"
+
+    @ui.button(label="🗑 Снять варн", style=discord.ButtonStyle.danger)
+    async def remove(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self._author_id:
+            return await interaction.response.send_message("❌ Эта кнопка не для тебя.", ephemeral=True)
+        guild_id = interaction.guild_id
+        user_id  = interaction.user.id
+
+        item_id, item = _find_remove_warn_shop_item(guild_id)
+        warn_data = get_warns(guild_id, user_id)
+        if not item or not warn_data:
+            button.disabled = True
+            await interaction.response.edit_message(view=self)
+            return await interaction.followup.send("❌ Снятие варна сейчас недоступно.", ephemeral=True)
+
+        price  = item["price"]
+        points = get_points(guild_id, user_id)
+        if points < price:
+            return await interaction.response.send_message(
+                f"❌ Недостаточно баллов! Нужно **{price}** 💎, у тебя **{points}** 💎", ephemeral=True,
+            )
+
+        guild_warn_roles = warn_roles.get(guild_id, {})
+        old_count = warn_data["warns"]
+        new_count = old_count - 1
+        roles_to_remove = [interaction.guild.get_role(rid) for rid in guild_warn_roles.values()]
+        try:
+            await interaction.user.remove_roles(*[r for r in roles_to_remove if r], reason="Самоснятие варна")
+        except Exception:
+            pass
+        if new_count <= 0:
+            remove_warn(guild_id, user_id)
+            desc = f"Твой последний варн снят!\nСписано **{price}** 💎"
+        else:
+            set_warn(guild_id, user_id, new_count, warn_data.get("reason", ""), warn_data.get("moderator", 0))
+            new_role = interaction.guild.get_role(guild_warn_roles.get(new_count))
+            if new_role:
+                try:
+                    await interaction.user.add_roles(new_role, reason=f"Самоснятие варна ({new_count}/3)")
+                except Exception:
+                    pass
+            desc = f"Варн снят! Теперь у тебя **{new_count}/3**\nСписано **{price}** 💎"
+        add_points(guild_id, user_id, -price)
+
+        button.disabled = True
+        await interaction.response.edit_message(view=self)
+        embed = discord.Embed(title="✅ Варн снят!", description=desc, color=discord.Color.green(), timestamp=datetime.now())
+        embed.set_footer(text="DIAMOND", icon_url=_footer(guild_id))
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+
 class RecruitCabinetView(ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -7243,13 +7148,46 @@ class RecruitCabinetView(ui.View):
         embed.set_footer(text="DIAMOND", icon_url=_footer(interaction.guild_id))
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @ui.button(label="Варн (только смузи)", emoji="🥤", style=discord.ButtonStyle.danger, custom_id="recruit_cabinet_warn_money", row=0)
+    @ui.button(label="Варны", emoji="⚠️", style=discord.ButtonStyle.secondary, custom_id="recruit_cabinet_my_warns", row=0)
+    async def btn_my_warns(self, interaction: discord.Interaction, button: ui.Button):
+        warn_data = get_warns(interaction.guild_id, interaction.user.id)
+        if not warn_data:
+            embed = discord.Embed(
+                title="✅ Варны",
+                description="У тебя нет варнов.",
+                color=discord.Color.green(),
+                timestamp=datetime.now(),
+            )
+            embed.set_footer(text="DIAMOND", icon_url=_footer(interaction.guild_id))
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        embed = discord.Embed(
+            title="⚠️ Варны",
+            color=discord.Color.orange(),
+            timestamp=datetime.now(),
+        )
+        embed.add_field(name="Количество", value=f"{warn_data['warns']}/3", inline=True)
+        embed.add_field(name="Причина", value=warn_data.get("reason", "—"), inline=True)
+        embed.set_footer(text="DIAMOND", icon_url=_footer(interaction.guild_id))
+
+        _, item = _find_remove_warn_shop_item(interaction.guild_id)
+        view = SelfRemoveWarnView(interaction.user.id, item["price"]) if item else None
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @ui.button(label="Все варны", emoji="📋", style=discord.ButtonStyle.secondary, custom_id="recruit_cabinet_all_warns", row=0)
+    async def btn_all_warns(self, interaction: discord.Interaction, button: ui.Button):
+        if not is_ticket_manager(interaction):
+            return await interaction.response.send_message("❌ Недостаточно прав!", ephemeral=True)
+        embed = _build_warnlist_embed(interaction.guild)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @ui.button(label="Варн (только смузи)", emoji="🥤", style=discord.ButtonStyle.danger, custom_id="recruit_cabinet_warn_money", row=1)
     async def btn_warn_money(self, interaction: discord.Interaction, button: ui.Button):
         if not is_ticket_manager(interaction):
             return await interaction.response.send_message("❌ Недостаточно прав!", ephemeral=True)
         await interaction.response.send_modal(IssueWarnModal())
 
-    @ui.button(label="Снять варн", emoji="✅", style=discord.ButtonStyle.success, custom_id="recruit_cabinet_warn_remove", row=0)
+    @ui.button(label="Снять варн", emoji="✅", style=discord.ButtonStyle.success, custom_id="recruit_cabinet_warn_remove", row=1)
     async def btn_warn_remove(self, interaction: discord.Interaction, button: ui.Button):
         if not is_ticket_manager(interaction):
             return await interaction.response.send_message("❌ Недостаточно прав!", ephemeral=True)
@@ -8179,9 +8117,8 @@ async def _expire_afk_dict(afk_dict: dict, refresh_fn):
 
 @tasks.loop(minutes=1)
 async def afk_expire_loop():
-    """Каждую минуту проверяет AFK-списки (обычный и Mirror) и удаляет тех, чьё время вернуться наступило (МСК)."""
+    """Каждую минуту проверяет AFK-список и удаляет тех, чьё время вернуться наступило (МСК)."""
     await _expire_afk_dict(afk_list, refresh_afk_message)
-    await _expire_afk_dict(afk_list_mirror, refresh_afk_message_mirror)
 
 
 @afk_expire_loop.error
@@ -8229,9 +8166,8 @@ async def _expire_inactive_dict(inactive_dict: dict, refresh_fn):
 
 @tasks.loop(hours=1)
 async def inactive_expire_loop():
-    """Каждый час проверяет списки инактива (обычный и Mirror) и удаляет тех, чья дата возвращения наступила (МСК)."""
+    """Каждый час проверяет список инактива и удаляет тех, чья дата возвращения наступила (МСК)."""
     await _expire_inactive_dict(inactive_list, refresh_inactive_message)
-    await _expire_inactive_dict(inactive_list_mirror, refresh_inactive_message_mirror)
 
 
 @inactive_expire_loop.error
