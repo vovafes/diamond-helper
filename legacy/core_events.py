@@ -16,6 +16,7 @@ from legacy.app import (
 )
 from legacy.cabinet import (
     PersonalCabinetView,
+    _refresh_cabinet_panel,
 )
 from legacy.contracts import (
     ActiveContractView,
@@ -49,6 +50,7 @@ from legacy.shop import (
     ShopView,
 )
 from legacy.state import (
+    cabinet_panels,
     event_lists,
     guild_shop_items,
     load_chips,
@@ -265,6 +267,11 @@ async def on_ready():
         vzh_reminder_loop.start()
     if not vzp_monitor_loop.is_running():
         vzp_monitor_loop.start()
+    # Обновляем панели кабинета, чтобы новые кнопки появились без пересоздания
+    for gid in list(cabinet_panels.keys()):
+        guild = bot.get_guild(gid)
+        if guild:
+            await _refresh_cabinet_panel(guild)
     for gid in list(roster_settings.keys()):
         guild = bot.get_guild(gid)
         if guild:
