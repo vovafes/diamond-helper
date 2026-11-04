@@ -12,11 +12,16 @@ from legacy.feedback import (
 )
 from legacy.helpers import (
     _footer,
+    build_shop_embed,
     get_points,
     is_admin,
 )
+from legacy.shop import (
+    ShopView,
+)
 from legacy.state import (
     cabinet_invite_links,
+    guild_shop_items,
     cabinet_panels,
     message_counts,
     save_data,
@@ -78,6 +83,14 @@ class PersonalCabinetView(ui.View):
         )
         embed.set_footer(text="DIAMOND", icon_url=_footer(interaction.guild_id))
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @ui.button(label="Магазин", emoji="🛒", style=discord.ButtonStyle.success, custom_id="cabinet_shop", row=0)
+    async def btn_shop(self, interaction: discord.Interaction, button: ui.Button):
+        gid = interaction.guild_id
+        embed = build_shop_embed(gid)
+        if not guild_shop_items.get(gid):
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed, view=ShopView(gid), ephemeral=True)
 
     @ui.button(label="Фидбек", emoji="💬", style=discord.ButtonStyle.danger, custom_id="cabinet_feedback", row=0)
     async def btn_feedback(self, interaction: discord.Interaction, button: ui.Button):
