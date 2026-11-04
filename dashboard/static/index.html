@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DIAMOND · Панель</title>
+<link rel="stylesheet" href="/static/fonts/fonts.css">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="login" class="login hidden">
+  <div class="login-card">
+    <div class="logo">D</div>
+    <h1>DIAMOND</h1>
+    <p>Панель управления ботом</p>
+    <a class="btn primary" href="/auth/login">Войти через Discord</a>
+  </div>
+</div>
+
+<div id="app" class="app hidden">
+  <aside class="sidebar">
+    <div class="brand"><div class="logo sm">D</div><span>DIAMOND</span></div>
+    <div class="guild-pick">
+      <select id="guildSelect"></select>
+    </div>
+    <input id="search" class="search" type="search" placeholder="Поиск модуля…" autocomplete="off">
+    <nav id="nav"></nav>
+    <div class="user">
+      <span id="userName"></span>
+      <button class="link" id="logoutBtn">Выйти</button>
+    </div>
+  </aside>
+  <div class="content">
+    <header class="topbar"><button class="btn menu-btn" id="menuBtn" aria-label="Меню"><span id="menuIcon"></span></button><span id="topTitle"></span></header>
+    <main id="main"></main>
+  </div>
+</div>
+
+<dialog id="dlg"></dialog>
+<div id="toast" class="toast hidden"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
