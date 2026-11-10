@@ -48,12 +48,16 @@ def _fake_bot():
                NS(id=8, name="Администратор", color=NS(value=0xED4245), managed=False, position=9, is_default=lambda: False),
                NS(id=9, name="Участник", color=NS(value=0x5865F2), managed=False, position=1, is_default=lambda: False)],
     )
-    guild.members = []
+    guild.premium_subscription_count, guild.premium_tier, guild.emoji_limit = 9, 1, 100
+    guild.emojis = [NS(id=i) for i in range(23)]
+    bot_flag = lambda i: i % 9 == 0
+    guild.members = [NS(id=2000 + i, bot=bot_flag(i), roles=[r for r in (guild.roles[3], guild.roles[1]) if i % 4 == 0 or r is guild.roles[3]][: 1 + (i % 3 == 0)])
+                     for i in range(120)]
     people = {1001: "Алексей", 1002: "Мария", 1: "Demo Admin"}
     guild.get_member = lambda i: NS(id=i, display_name=people[i]) if i in people else None
     guild.get_role = lambda i: next((r for r in guild.roles if r.id == i), None)
     guild.get_channel = lambda i: next((c for c in guild.channels if c.id == i), None)
-    return NS(get_guild=lambda i: guild if i == GID else None, guilds=[guild])
+    return NS(get_guild=lambda i: guild if i == GID else None, guilds=[guild], latency=0.047)
 
 
 async def main():
@@ -61,6 +65,10 @@ async def main():
     db.init(Path(tempfile.mkdtemp()) / "demo.sqlite")
     # a little history so the audit log and case table aren't empty
     db.audit(GID, 1, "Demo Admin", "logging", "config_update", {"messages_channel": {"from": None, "to": 3}})
+    import time as _t
+    for k in range(40):     # fake joins/leaves over the last ~40 days
+        db.execute("INSERT INTO member_events (ts, guild_id, user_id, kind, is_bot) VALUES (?,?,?,?,0)",
+                   (int(_t.time()) - k * 86400 - 3600, GID, 3000 + k, "join" if k % 3 else "leave"))
     me = NS(id=1, __str__=lambda s: "demo-mod#0001")
     class U(NS):
         def __str__(self): return self.name

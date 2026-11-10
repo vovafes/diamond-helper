@@ -23,6 +23,7 @@ import inspect
 import json
 import os
 import secrets
+import sys
 import time
 from pathlib import Path
 from urllib.parse import urlencode
@@ -312,6 +313,104 @@ async def api_analytics(request):
     })
 
 
+def _process_memory() -> dict | None:
+    """RSS of the bot process without psutil: /proc on Linux, resource.ru_maxrss (peak) elsewhere."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return {"bytes": int(line.split()[1]) * 1024, "peak": False}
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        import resource
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return {"bytes": int(peak) * (1 if sys.platform == "darwin" else 1024), "peak": True}
+    except Exception:
+        return None
+
+
+def _process_started() -> float:
+    try:
+        with open("/proc/self/stat") as f:
+            ticks = int(f.read().rsplit(")", 1)[1].split()[19])
+        with open("/proc/uptime") as f:
+            up = float(f.read().split()[0])
+        return time.time() - (up - ticks / os.sysconf("SC_CLK_TCK"))
+    except Exception:
+        return _IMPORTED_AT
+
+
+_IMPORTED_AT = time.time()
+
+
+async def api_server_stats(request):
+    """Technical state of the bot and the server, plus member statistics. Online count is not offered:
+    it needs the privileged Presence intent, which the bot does not request."""
+    _, guild = _guild_for(request)
+    bot = request.app["bot"]
+    try:
+        days = max(1, min(90, int(request.query.get("days", "30"))))
+    except ValueError:
+        days = 30
+    lat = getattr(bot, "latency", None)
+    lat_ms = round(lat * 1000) if isinstance(lat, (int, float)) and lat == lat and lat != float("inf") else None
+    members = list(getattr(guild, "members", None) or [])
+    bots = sum(1 for m in members if getattr(m, "bot", False))
+    cached = len(members)
+    total = guild.member_count or cached
+    role_counts: dict[int, int] = {}
+    for m in members:
+        for r in getattr(m, "roles", []):
+            role_counts[r.id] = role_counts.get(r.id, 0) + 1
+    top_roles = []
+    for r in sorted(guild.roles, key=lambda r: -role_counts.get(r.id, 0)):
+        if r.is_default() or not role_counts.get(r.id):
+            continue
+        top_roles.append({"name": r.name, "color": r.color.value, "n": role_counts[r.id]})
+        if len(top_roles) == 8:
+            break
+    chans = list(guild.channels)
+    kinds = [getattr(getattr(c, "type", None), "name", "") for c in chans]
+    now = int(time.time())
+    msk = 3 * 3600
+    since = now - days * 86400
+    rows = await db.run(db.query, "SELECT ts, kind, is_bot FROM member_events WHERE guild_id=? AND ts>=?", (guild.id, since))
+    first = await db.run(db.query, "SELECT MIN(ts) AS t FROM member_events WHERE guild_id=?", (guild.id,))
+    per_day: dict[str, list[int]] = {}
+    for i in range(days - 1, -1, -1):
+        per_day[time.strftime("%d.%m", time.gmtime(now - i * 86400 + msk))] = [0, 0]
+    joins = leaves = 0
+    for r in rows:
+        j = r["kind"] == "join"
+        joins += j
+        leaves += not j
+        key = time.strftime("%d.%m", time.gmtime(r["ts"] + msk))
+        if key in per_day:
+            per_day[key][0 if j else 1] += 1
+    tracked_since = first[0]["t"] if first else None
+    return web.json_response({
+        "days": days,
+        "bot": {
+            "latency_ms": lat_ms, "uptime_s": int(time.time() - _process_started()),
+            "memory": _process_memory(), "guilds": len(getattr(bot, "guilds", [])),
+        },
+        "server": {
+            "channels": len(chans), "text": kinds.count("text") + kinds.count("news"), "voice": kinds.count("voice") + kinds.count("stage_voice"),
+            "categories": len(getattr(guild, "categories", [])), "roles": len(guild.roles),
+            "emojis": len(getattr(guild, "emojis", [])), "emoji_limit": getattr(guild, "emoji_limit", None),
+            "boosts": getattr(guild, "premium_subscription_count", 0) or 0,
+            "boost_level": getattr(guild, "premium_tier", 0) or 0,
+        },
+        "members": {
+            "total": total, "bots": bots if cached else None, "humans": (total - bots) if cached else None,
+            "cached": cached, "joins": joins, "leaves": leaves, "tracked_since": tracked_since,
+            "per_day": [{"day": d, "joins": v[0], "leaves": v[1]} for d, v in per_day.items()],
+            "top_roles": top_roles,
+        },
+    })
+
+
 _JS_SAFE_INT = 2 ** 53
 
 
@@ -522,6 +621,7 @@ def create_app(bot) -> web.Application:
     r.add_get("/api/guild/{gid}/roles", api_roles)
     r.add_get("/api/guild/{gid}/audit", api_audit)
     r.add_get("/api/guild/{gid}/analytics", api_analytics)
+    r.add_get("/api/guild/{gid}/server-stats", api_server_stats)
     r.add_get("/api/guild/{gid}/members", api_members)
     r.add_get("/api/guild/{gid}/members/{uid}", api_member)
     for hook in _route_hooks:
