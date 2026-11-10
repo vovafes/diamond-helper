@@ -471,8 +471,20 @@ async def _errors(request, handler):
         raise
 
 
-_APP_CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; "
-            "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+def _inline_script_hashes() -> str:
+    """CSP sha256 sources for the inline <script> blocks of index.html (the JS lives inline, see the bot-host note)."""
+    import base64
+    import re
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    out = []
+    for m in re.finditer(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", html, re.S):
+        digest = base64.b64encode(hashlib.sha256(m.group(1).encode("utf-8")).digest()).decode()
+        out.append(f"'sha256-{digest}'")
+    return " ".join(out)
+
+
+_APP_CSP = ("default-src 'self'; script-src 'self' " + _inline_script_hashes() + "; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' https: data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 
 
 @web.middleware
